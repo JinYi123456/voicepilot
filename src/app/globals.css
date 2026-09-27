@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  height: 100%;
+}
+
+/* Thin dark scrollbars for the transcript / log panes */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2a3047 transparent;
+}
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2a3047;
+  border-radius: 3px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Blinking cursor after live partial transcripts */
+.typewriter-cursor::after {
+  content: "▍";
+  margin-left: 2px;
+  animation: caret 0.9s steps(1) infinite;
+  color: #2ee6a8;
+}
+
+@keyframes caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Subtle grid backdrop for the demo "studio" look */
+.grid-backdrop {
+  background-image:
+    radial-gradient(ellipse 80% 60% at 50% -10%, rgba(139, 124, 255, 0.12), transparent),
+    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 100% 100%, 44px 44px, 44px 44px;
+}
