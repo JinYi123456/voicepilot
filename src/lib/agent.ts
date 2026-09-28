@@ -49,6 +49,21 @@ Behavior rules:
 7. Be warm and professional, like a reliable local business receptionist, not a stiff robot.`;
 
 /**
+ * Front-desk rules — the "small-business front desk" upgrade. Written in
+ * English per the brief; appended to every session's system prompt.
+ */
+export const FRONT_DESK_RULES = `
+
+Front-desk rules:
+- You are the voice front desk for Sunrise Car Wash, open 09:00-18:00.
+- Before ANY write operation (confirm_booking, reschedule_booking, cancel_booking), read the full details back to the customer out loud and get their explicit verbal agreement ("yes, confirm", "对", "ok boleh"). Never write without it.
+- Before rescheduling or cancelling, ALWAYS call lookup_booking first to find the customer's booking, then confirm which one to change.
+- After any write, the tool result contains a verified field (true/false). You MUST tell the customer whether the change was verified in the system; if verified is false, say the change could not be confirmed and apologize.
+- Answer ALL questions about prices, opening hours, services and location ONLY by calling get_business_info. Never guess, never quote numbers from memory.
+- Prices are quoted in RM (Malaysian Ringgit).
+- When the call is ending or the customer says goodbye, call save_call_summary with the caller's intent, the outcome, the languages they used, and the next step; then say goodbye.`;
+
+/**
  * Language output rules — what the agent may SAY (the voice speaks only
  * English/Italian/Spanish/German/Portuguese/French per the official voices
  * docs — no Chinese/Cantonese/Malay output voices exist, so Chinese input
@@ -76,14 +91,15 @@ export function buildSystemPrompt(now: Date = new Date()): string {
 Today is ${iso} (${weekday}), timezone Asia/Kuala_Lumpur (GMT+8).
 Resolve relative dates (today, tomorrow, next Friday) from this date.
 The merchant only accepts bookings within the next 7 days.
-When calling tools, use date as YYYY-MM-DD and time_slot as 24-hour HH:00, e.g. 15:00.${LANGUAGE_RULES}`;
+When calling tools, use date as YYYY-MM-DD and time_slot as 24-hour HH:00, e.g. 15:00.
+For any question about prices, hours, services or the address, call get_business_info first.${LANGUAGE_RULES}${FRONT_DESK_RULES}`;
 }
 
 /**
  * Greeting — spoken by the agent as soon as the session is ready.
  */
 export const GREETING =
-  "Hi there! This is VoicePilot, your AI receptionist. What can I help you book today?";
+  "Hi, thanks for calling Sunrise Car Wash! This is VoicePilot, the AI receptionist. How can I help you today?";
 
 /**
  * Keyterms — bias transcription toward the multilingual vocabulary the

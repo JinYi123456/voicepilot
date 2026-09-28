@@ -22,7 +22,47 @@ export type Booking = {
   service_type: string;
   confirmed_time: string;
   created_at: string;
+  /** Lifecycle for the Owner View: cancelled/rescheduled records stay listed. */
+  status: "confirmed" | "rescheduled" | "cancelled";
 };
+
+const BOOKING_SEEDS: Omit<Booking, "created_at">[] = [
+  {
+    id: "bk_seed_ali",
+    customer_name: "Ali bin Abu",
+    phone: "012-3456789",
+    service_type: "Basic Wash",
+    confirmed_time: "",
+    status: "confirmed",
+  },
+  {
+    id: "bk_seed_mei",
+    customer_name: "Mei Ling",
+    phone: "017-8881234",
+    service_type: "Full Detail",
+    confirmed_time: "",
+    status: "confirmed",
+  },
+];
+
+/** Normalize a tolerant time string to the exact on-the-hour "HH:00" form. */
+export function normalizeTimeSlot(timeSlot: string): string | null {
+  const hour = parseTimeHour(timeSlot);
+  if (hour === null) return null;
+  return `${String(hour).padStart(2, "0")}:00`;
+}
+
+/** Short human label for the Owner View / status badges. */
+export function statusLabel(status: Booking["status"]): string {
+  switch (status) {
+    case "cancelled":
+      return "cancelled";
+    case "rescheduled":
+      return "rescheduled";
+    default:
+      return "confirmed";
+  }
+}
 
 /** Deterministic PRNG (mulberry32) so the demo picture is stable. */
 function mulberry32(seed: number) {
@@ -55,7 +95,19 @@ function buildAvailability(): Slot[] {
 
 const availability: Slot[] = buildAvailability();
 
-const bookings: Booking[] = [];
+const bookings: Booking[] = BOOKING_SEEDS.map((seed, i) => {
+  // Seed bookings land on day+2 so they always sit inside the bookable
+  // window regardless of when the demo runs.
+  const d = new Date();
+  d.setDate(d.getDate() + 2 + i);
+  const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const hour = 10 + i * 4; // 10:00 and 14:00
+  const time = `${String(hour).padStart(2, "0")}:00`;
+  // Seed slots count as taken on the availability board.
+  const slot = availability.find((s) => s.date === iso && s.time === time);
+  if (slot) slot.taken = true;
+  return { ...seed, confirmed_time: `${iso} ${time}`, created_at: new Date().toISOString() };
+});
 
 /** Weekday helpers for the mock store (Monday = 1 … Sunday = 7). */
 function isoToWeekday(iso: string): string | null {
@@ -72,7 +124,10 @@ function isoToWeekday(iso: string): string | null {
  * Returns the 24-hour hour, or null when nothing parseable is found.
  */
 export function parseTimeHour(timeSlot: string): number | null {
-  const m = /(\d{1,2})(?::(\d{2}))?\s*(am|pm|点|o'?clock)?/i.exec(timeSlot ?? "");
+  // Strip a leading date ("2026-10-01 11:00" / "2026-10-01T11:00") first —
+  // otherwise the year's first two digits ("20") would parse as hour 20.
+  const cleaned = (timeSlot ?? "").replace(/\d{4}-\d{2}-\d{2}/g, " ").replace(/[T]/g, " ");
+  const m = /(\d{1,2})(?::(\d{2}))?\s*(am|pm|点|o'?clock)?/i.exec(cleaned);
   if (!m) return null;
   let hour = Number(m[1]);
   const suffix = (m[3] ?? "").toLowerCase();
@@ -234,7 +289,25 @@ export type ConfirmBookingOutput = {
   confirmed_time: string;
   customer_name: string;
   phone: string;
+  /** Post-write re-read from the store: does the record really say this? */
+  verified: boolean;
+  /** The re-read record, returned alongside the verdict. */
+  record: Booking;
 };
+
+/**
+ * Post-write auto-verification — read the record back from the store and
+ * compare the fields the write claimed to set. Attached to every write tool
+ * result (VOICE2ERP pattern): the agent must report this to the caller.
+ */
+function verifyBooking(id: string, expected: Partial<Booking>): { verified: boolean; record: Booking | null } {
+  const record = bookings.find((b) => b.id === id) ?? null;
+  if (!record) return { verified: false, record: null };
+  for (const [key, value] of Object.entries(expected)) {
+    if (record[key as keyof Booking] !== value) return { verified: false, record };
+  }
+  return { verified: true, record };
+}
 
 /**
  * confirm_booking — appends to the mock store and marks the matching slot
@@ -248,6 +321,7 @@ export function confirmBooking(input: ConfirmBookingInput): ConfirmBookingOutput
     service_type: input.service_type,
     confirmed_time: input.confirmed_time,
     created_at: new Date().toISOString(),
+    status: "confirmed",
   };
   bookings.push(booking);
 
@@ -258,6 +332,12 @@ export function confirmBooking(input: ConfirmBookingInput): ConfirmBookingOutput
     if (slot) slot.taken = true;
   }
 
+  const { verified, record } = verifyBooking(booking.id, {
+    status: "confirmed",
+    service_type: booking.service_type,
+    confirmed_time: booking.confirmed_time,
+  });
+
   return {
     booking_id: booking.id,
     status: "confirmed",
@@ -267,13 +347,197 @@ export function confirmBooking(input: ConfirmBookingInput): ConfirmBookingOutput
     confirmed_time: booking.confirmed_time,
     customer_name: booking.customer_name,
     phone: booking.phone,
+    verified,
+    record: record ?? booking,
   };
 }
 
+export type LookupBookingInput = {
+  customer_name?: string;
+  phone?: string;
+};
+
+export type LookupBookingOutput = {
+  found: number;
+  /** Matches for the requested person; includes cancelled/rescheduled ones. */
+  bookings: Booking[];
+  /** Machine-readable outcome for the agent to speak from. */
+  reason: "matched" | "no_match" | "missing_argument" | null;
+};
+
+/**
+ * lookup_booking — find existing bookings by customer_name or phone before
+ * any reschedule/cancel. Callers say "that's under my phone 017-..." or
+ * "it's Mei Ling" — so both keys are tolerated, case-insensitively.
+ */
+export function lookupBooking(input: LookupBookingInput): LookupBookingOutput {
+  const name = (input.customer_name ?? "").trim().toLowerCase();
+  const phone = (input.phone ?? "").trim().toLowerCase();
+  if (!name && !phone) {
+    return { found: 0, bookings: [], reason: "missing_argument" };
+  }
+  const matches = bookings.filter((b) => {
+    if (b.status === "cancelled") return false; // cancelled bookings can't be operated on
+    if (name && b.customer_name.toLowerCase().includes(name)) return true;
+    if (phone && b.phone.toLowerCase().replace(/[\s-]/g, "").includes(phone.replace(/[\s-]/g, ""))) return true;
+    return false;
+  });
+  return { found: matches.length, bookings: matches, reason: matches.length > 0 ? "matched" : "no_match" };
+}
+
+export type RescheduleBookingInput = {
+  booking_id: string;
+  new_date: string;
+  new_time_slot: string;
+};
+
+export type RescheduleBookingOutput = {
+  success: boolean;
+  reason: "booking_not_found" | "slot_unavailable" | "unparseable_input" | "same_time" | null;
+  /** Only set on success. */
+  booking_id?: string;
+  old_time?: string;
+  new_time?: string;
+  service_type?: string;
+  customer_name?: string;
+  /** Post-write re-read verdict — the agent must report this to the caller. */
+  verified?: boolean;
+  /** The re-read record, returned alongside the verdict. */
+  record?: Booking;
+  /** Proposed alternatives when the requested slot is not free. */
+  alternatives?: { date: string; time: string }[];
+};
+
+/** Release the slot a (non-cancelled) booking used to hold, when resolvable. */
+function releaseSlotOf(booking: Booking): void {
+  const dateMatch = /(\d{4}-\d{2}-\d{2})/.exec(booking.confirmed_time);
+  if (!dateMatch) return;
+  const slot = findSlot(dateMatch[1], booking.confirmed_time);
+  if (!slot || !slot.taken) return;
+  // Release only when no OTHER active booking still holds this exact slot
+  // (protects double-booked slots and pre-seeded walk-ins).
+  const key = `${slot.date} ${slot.time}`;
+  const stillHeld = bookings.some(
+    (b) => b.id !== booking.id && b.status !== "cancelled" && b.confirmed_time === key,
+  );
+  if (!stillHeld) slot.taken = false;
+}
+
+/**
+ * reschedule_booking — atomically move a booking: the new slot must be free
+ * BEFORE the move (otherwise nothing changes), the old slot is released,
+ * and the store is re-read to verify the write.
+ */
+export function rescheduleBooking(input: RescheduleBookingInput): RescheduleBookingOutput {
+  const booking = bookings.find((b) => b.id === input.booking_id);
+  if (!booking || booking.status === "cancelled") {
+    return { success: false, reason: "booking_not_found" };
+  }
+
+  const dateMatch = /(\d{4}-\d{2}-\d{2})/.exec(input.new_date ?? "");
+  const newTime = normalizeTimeSlot(input.new_time_slot ?? "");
+  if (!dateMatch || !newTime) {
+    return { success: false, reason: "unparseable_input" };
+  }
+  const newDate = dateMatch[1];
+  const newConfirmed = `${newDate} ${newTime}`;
+
+  if (newConfirmed === booking.confirmed_time) {
+    return { success: false, reason: "same_time", booking_id: booking.id };
+  }
+
+  const target = availability.find((s) => s.date === newDate && s.time === newTime);
+  if (!target || target.taken) {
+    // Nearest open slots so the agent can propose alternatives.
+    const now = new Date();
+    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const alternatives: { date: string; time: string }[] = [];
+    const startKey = `${newDate} ${newTime}`;
+    for (const s of availability) {
+      if (s.taken || s.date < todayIso) continue;
+      if (`${s.date} ${s.time}` <= startKey) continue;
+      alternatives.push({ date: s.date, time: s.time });
+      if (alternatives.length >= 3) break;
+    }
+    return { success: false, reason: "slot_unavailable", alternatives };
+  }
+
+  // Move it: release the old slot, take the new one, update the record.
+  releaseSlotOf(booking);
+  target.taken = true;
+  const oldTime = booking.confirmed_time;
+  booking.confirmed_time = newConfirmed;
+  booking.status = "rescheduled";
+
+  const { verified, record } = verifyBooking(booking.id, {
+    confirmed_time: newConfirmed,
+    status: "rescheduled",
+  });
+
+  return {
+    success: true,
+    reason: null,
+    booking_id: booking.id,
+    old_time: oldTime,
+    new_time: newConfirmed,
+    service_type: booking.service_type,
+    customer_name: booking.customer_name,
+    verified,
+    record: record ?? booking,
+  };
+}
+
+export type CancelBookingInput = {
+  booking_id: string;
+};
+
+export type CancelBookingOutput = {
+  success: boolean;
+  reason: "booking_not_found" | null;
+  /** Only set on success. */
+  booking_id?: string;
+  released_time?: string;
+  service_type?: string;
+  customer_name?: string;
+  /** Post-write re-read verdict — the agent must report this to the caller. */
+  verified?: boolean;
+  /** The re-read record, returned alongside the verdict. */
+  record?: Booking;
+};
+
+/**
+ * cancel_booking — mark the booking cancelled and release its slot.
+ * Cancelled records stay in the store so the Owner View keeps the history.
+ */
+export function cancelBooking(input: CancelBookingInput): CancelBookingOutput {
+  const booking = bookings.find((b) => b.id === input.booking_id);
+  if (!booking || booking.status === "cancelled") {
+    return { success: false, reason: "booking_not_found" };
+  }
+
+  releaseSlotOf(booking);
+  booking.status = "cancelled";
+
+  const { verified, record } = verifyBooking(booking.id, { status: "cancelled" });
+
+  return {
+    success: true,
+    reason: null,
+    booking_id: booking.id,
+    released_time: booking.confirmed_time,
+    service_type: booking.service_type,
+    customer_name: booking.customer_name,
+    verified,
+    record: record ?? booking,
+  };
+}
+
+/** Full booking list for the Owner View (includes cancelled/rescheduled). */
 export function getBookings(): Booking[] {
   return [...bookings];
 }
 
+/** Availability snapshot after the latest write — the Owner View re-renders. */
 export function getAvailability(): Slot[] {
   return availability.map((s) => ({ ...s }));
 }

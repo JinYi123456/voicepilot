@@ -1,6 +1,6 @@
 # VoicePilot 🎧
 
-> A voice receptionist agent that understands **code-mixed English / Mandarin / Cantonese / Malay** — it answers calls for local small businesses (restaurants, clinics, salons, car washes…) and completes appointment bookings end-to-end.
+> A **multilingual AI front desk for small businesses** that understands **code-mixed English / Mandarin / Cantonese / Malay** — it answers calls for the demo shop (Sunrise Car Wash), quotes prices & hours from the business profile, takes bookings, and reschedules or cancels them — with every write verified against the store.
 
 lablab.ai × AssemblyAI Voice Agent Hackathon demo.
 
@@ -55,9 +55,13 @@ All of it runs over one `wss://agents.assemblyai.com/v1/ws` connection, and the 
                                              └─────────────────────────────┘
 
   Browser-side tool handlers (pure frontend mocks, no database):
-    check_availability  → src/lib/mock.ts (next 7 days × 09:00–18:00, ~30% pre-booked)
-    confirm_booking     → appends to in-memory bookings + pops the confirmation card
-                          (simulated "SMS sent to customer / merchant notified")
+    check_availability   → src/lib/mock.ts (next 7 days × 09:00–18:00, ~30% pre-booked)
+    confirm_booking      → writes a booking, re-reads it, returns verified:true/false
+    lookup_booking       → find bookings by customer_name or phone
+    reschedule_booking   → checks the new slot is free, moves the record, releases the old slot
+    cancel_booking       → marks the record cancelled and releases its slot
+    get_business_info    → src/lib/business.ts (hours / services / prices / location)
+    save_call_summary    → end-of-call summary (intent / outcome / languages / next step)
 ```
 
 **Key implementation points (all wired exactly per the official docs):**
@@ -70,6 +74,9 @@ All of it runs over one `wss://agents.assemblyai.com/v1/ws` connection, and the 
 | Audio output | `reply.audio` → PCM16 → Float32 → sequentially scheduled AudioBuffers |
 | Interruptions | Server-side VAD + semantic decision; the frontend only handles `reply.done(status:"interrupted")` → flush the playback queue, drop unsent tool.results (the documented flush pattern). No hand-rolled interruption detection |
 | Tool calling | `tool.call` arrives → run mock logic → accumulate → send `tool.result` on `reply.done` (the docs' recommended drain-on-reply.done wiring) |
+| Post-write verification | After every write (confirm / reschedule / cancel) the store record is **re-read** and the tool result carries `verified: true/false` + the record; the confirmation card shows **✓ Verified in system** or a red warning, and the agent is prompted to report the verdict to the caller |
+| Owner View | An on-page tab for the business owner: the full bookings list (with rescheduled / cancelled statuses) and an Activity Log of every tool call (time, args, result, verified badge) |
+| Call summary | The agent calls `save_call_summary` at goodbye; the card appears after the call ends. If it never fires, the frontend builds a fallback summary from the transcript + tool log (no LLM) |
 | Hangup | `session.end` → wait for `session.ended` → clean up (avoids the billable 30-second resume grace window) |
 | Multilingual | `language_codes: ["en","zh","yue","ms"]` steering + keyterms boost; STT code-switches natively mid-sentence |
 
@@ -94,6 +101,25 @@ Open <http://localhost:3000> (**Chrome / Edge**; mic permission needs localhost 
 
 > Expect ~1 second of session setup before you can speak (token minting + WebSocket handshake). The event log at the bottom left shows every WebSocket frame, which makes debugging easy.
 
+## The tools (all flat JSON-Schema, executed browser-side)
+
+| Tool | Arguments | What it does |
+| --- | --- | --- |
+| `check_availability` | `service_type, date, time_slot, party_size?` | Checks the 7-day × 09:00–18:00 mock calendar; returns a machine-readable `reason` plus the 3 nearest open slots |
+| `confirm_booking` | `customer_name?, phone?, service_type, confirmed_time` | Writes the booking, takes the slot, re-reads the record → `verified` |
+| `lookup_booking` | `customer_name? / phone?` | Finds existing bookings by name or phone (required before reschedule/cancel per the prompt) |
+| `reschedule_booking` | `booking_id, new_date, new_time_slot` | Verifies the new slot is free **before** moving, releases the old slot, re-reads → `verified` |
+| `cancel_booking` | `booking_id` | Marks the record `cancelled` (kept in the Owner View history), releases the slot, re-reads → `verified` |
+| `get_business_info` | `topic: hours\|services\|prices\|location` | The single source of truth for Sunrise Car Wash facts; prices come **only** from here (`src/lib/business.ts`) |
+| `save_call_summary` | `intent, outcome, languages_used, next_step` | End-of-call summary; the UI shows the card, or builds a fallback if never called |
+
+## Owner View
+
+The right column has an **Owner View** tab strip with:
+
+- **Bookings** — every record in the store, including `rescheduled` and `cancelled` ones (the seed bookings "Ali bin Abu" and "Mei Ling" are always there so the demo never starts empty), plus open-slot capacity at a glance.
+- **Activity Log** — every tool call with timestamp, arguments, JSON result and a ✓ verified / ✗ unverified badge on writes (the existing tool-call inspector, integrated here).
+
 ## Demo script — the 5 test sentences
 
 Say the following 5 lines to the mic, in order. They cover every MVP demo point. The sentences are kept in their original code-mixed wording — that's the product's core selling point — with English translations in brackets.
@@ -104,13 +130,17 @@ Say the following 5 lines to the mic, in order. They cover every MVP demo point.
 | 2 | **"下个星期五得唔得？大概3点左右"** | "Would next Friday work? Around 3 o'clock" (Cantonese-flavored ZH) | Cantonese mixed with Mandarin/EN | The agent understands and checks Fri 15:00, then reads availability back aloud |
 | 3 | **"Boleh saya buat temujanji untuk Sabtu, 2 orang"** | "May I make an appointment for Saturday, 2 people" (Malay) | Malay-dominant utterance | The agent understands Sabtu=Saturday, 2 orang=2 people, and runs the availability flow |
 | 4 | **"等等，我刚才说错了，是周六不是周五，麻烦改一下"** | "Wait, I said that wrong — it's Saturday, not Friday, please change it" | Mid-conversation correction | The agent honors the latest correction (Saturday) and re-runs check_availability |
-| 5 | **"Ok confirm，我叫Amy，电话是0123456789"** | "Ok, confirmed. My name is Amy, phone 0123456789" | Verbal confirmation → booking | The agent calls confirm_booking and the **confirmation card pops in on the right** (simulated "SMS sent / merchant notified") |
+| 5 | **"Ok confirm，我叫Amy，电话是0123456789"** | "Ok, confirmed. My name is Amy, phone 0123456789" | Verbal confirmation → booking | The agent calls confirm_booking and the **confirmation card pops in on the right** with **✓ Verified in system** (re-read from the store) |
 
 Tips for recording the demo video:
 
 1. During sentences 2–3, the "Merchant Availability" panel on the right shows the agent really consulting a calendar (if that slot is booked, the agent verbally suggests other open slots the same day — which demos the "no availability" branch).
 2. To showcase **real-time barge-in**: while the agent is reading back the confirmation, just cut in with "change it to Sunday" — it stops playing instantly and re-runs the flow (server-side semantic interruption).
-3. Tool call arguments and results appear live in the "Tool Calls" panel at the bottom, making the two-step flow visible to judges: check_availability first → verbal confirmation → only then confirm_booking.
+3. Tool call arguments and results appear live in the **Owner View → Activity Log**, making the two-step flow visible to judges: check_availability first → verbal confirmation → only then confirm_booking.
+4. Ask **"How much is the Full Detail?"** — the agent must call `get_business_info(topic:"prices")` and answer "120 ringgit" from the business profile (never from memory). **"What time do you open?"** / **"Where are you located?"** hit the `hours` / `location` topics.
+5. Say **"Hi, I booked under Mei Ling, 017-888 1234 — can I move it to Saturday 4pm?"** — the agent looks the booking up with `lookup_booking`, confirms verbally, then `reschedule_booking` moves it (old slot released on the heatmap) and reports the `verified` verdict. **"Actually, please just cancel it"** runs `cancel_booking` the same way — the Owner View then shows the record as `rescheduled` / `cancelled`.
+6. End with **"OK that's all, thank you, bye"** — the agent calls `save_call_summary` and the **Call Summary card** (intent / outcome / languages / next step) appears below the transcript. If the agent skips it, the frontend generates a fallback summary automatically (marked "auto-generated fallback").
+7. Every caller turn in the transcript carries **language tags** (EN / 中 / BM — e.g. "Boss，可以book明天下午3点吗" shows 中 + EN) labeled "detected from transcript" — a local heuristic on the text, not an API-provided label.
 
 ## Deploy to Vercel
 
@@ -129,17 +159,21 @@ src/
 │   ├── api/token/route.ts     # Server-side one-time Voice Agent token minting (key never leaves the server)
 │   ├── layout.tsx / globals.css / page.tsx
 ├── components/
-│   ├── TranscriptPane.tsx     # Live transcript (typewriter effect on partials)
-│   ├── BookingCardView.tsx    # Confirmation card (entrance animation — the demo's visual centerpiece)
-│   ├── AvailabilityPanel.tsx  # 7-day availability heatmap
-│   ├── ToolCallLogView.tsx    # Tool call args/results inspector
-│   ├── StatusPill.tsx / EventLog.tsx
-├── hooks/useVoiceAgent.ts     # React state layer
+│   ├── TranscriptPane.tsx     # Live transcript (typewriter partials + per-utterance language tags EN/中/BM)
+│   ├── BookingCardView.tsx    # Write-outcome card with ✓ Verified in system badge (the demo's visual centerpiece)
+│   ├── OwnerView.tsx          # Owner View: bookings table + Activity Log tabs
+│   ├── SummaryCardView.tsx    # End-of-call summary card (tool or fallback)
+│   ├── AvailabilityPanel.tsx  # 7-day availability heatmap (updates live on reschedule/cancel)
+│   ├── ToolCallLogView.tsx    # Tool call args/results inspector (inside Owner View)
+│   ├── StatusPill.tsx / EventLog.tsx / DiagnosticsBar.tsx / WireDebugPanel.tsx
+├── hooks/useVoiceAgent.ts     # React state layer (incl. fallback call summary)
 ├── lib/
-│   ├── voice-agent-client.ts  # Single-WebSocket client (audio, interruption flush, tool drain)
-│   ├── agent.ts               # Runtime system prompt (hard-coded per the brief)
-│   ├── tools.ts               # check_availability / confirm_booking JSON schemas
-│   └── mock.ts                # In-memory availability table + bookings store
+│   ├── voice-agent-client.ts  # Single-WebSocket client (audio, interruption flush, tool drain, tool routing)
+│   ├── agent.ts               # Runtime system prompt (brief rules + front-desk rules + language rules)
+│   ├── tools.ts               # 7 flat tool schemas
+│   ├── business.ts            # Sunrise Car Wash profile — the only source for hours/services/prices/location
+│   ├── language-tags.ts       # Local EN/中/BM detection for transcript tags
+│   └── mock.ts                # In-memory availability + bookings store with status & verified re-reads
 public/worklets/pcm-processor.js  # Mic capture worklet (24 kHz PCM16 + resampling)
 ```
 

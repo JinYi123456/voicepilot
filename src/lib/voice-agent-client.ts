@@ -20,7 +20,16 @@
  *   30-second resume grace window is billable)
  */
 
-import { checkAvailability, confirmBooking, getAvailability } from "@/lib/mock";
+import {
+  checkAvailability,
+  confirmBooking,
+  lookupBooking,
+  rescheduleBooking,
+  cancelBooking,
+  getAvailability,
+  type Booking,
+} from "@/lib/mock";
+import { getBusinessInfo } from "@/lib/business";
 
 export type AgentStatus =
   | "idle"
@@ -42,11 +51,30 @@ export type ToolCallLog = {
 
 export type BookingCard = {
   id: string;
+  /** Which write produced this card: confirm / reschedule / cancel. */
+  kind: "confirmed" | "rescheduled" | "cancelled";
   booking_id: string;
   customer_name: string;
-  phone: string;
+  phone?: string;
   service_type: string;
   confirmed_time: string;
+  /** Previous time, set for reschedule cards. */
+  previous_time?: string;
+  /** Post-write re-read verdict from the store — shown as "✓ Verified". */
+  verified?: boolean;
+  /** One-line spoken-style message the agent can echo. */
+  message?: string;
+  ts: number;
+};
+
+/** End-of-call summary card (from the save_call_summary tool). */
+export type CallSummary = {
+  id: string;
+  intent: string;
+  outcome: string;
+  languages_used: string[];
+  next_step: string;
+  source: "tool" | "fallback";
   ts: number;
 };
 
@@ -84,7 +112,10 @@ export type VoiceAgentClientOptions = {
   onAgentDelta: (text: string) => void;
   onAgentFinal: (text: string, interrupted: boolean) => void;
   onToolCall: (call: ToolCallLog) => void;
+  /** All write outcomes (confirm / reschedule / cancel) for the UI cards. */
   onBooking: (card: BookingCard) => void;
+  /** Fires when the agent saves the end-of-call summary. */
+  onCallSummary: (summary: CallSummary) => void;
   onLog: (line: string) => void;
   onError: (message: string) => void;
   onMicHealth: (health: MicHealth) => void;
@@ -107,6 +138,13 @@ export type MicHealth = {
   trackLive: boolean;
 };
 const TARGET_RATE = 24000;
+
+/** The languages_used tool arg may arrive as an array or a spoken string. */
+function parseSummaryArgs(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((v) => String(v));
+  const s = String(value ?? "").trim();
+  return s ? s.split(/[,+/、]/).map((t) => t.trim()).filter(Boolean) : [];
+}
 
 export class VoiceAgentClient {
   private opts: VoiceAgentClientOptions;
@@ -424,22 +462,66 @@ export class VoiceAgentClient {
           party_size: typeof args.party_size === "number" ? args.party_size : undefined,
         });
       } else if (name === "confirm_booking") {
-        result = confirmBooking({
+        const r = confirmBooking({
           customer_name: args.customer_name === undefined ? undefined : String(args.customer_name),
           phone: args.phone === undefined ? undefined : String(args.phone),
           service_type: String(args.service_type ?? ""),
           confirmed_time: String(args.confirmed_time ?? ""),
         });
-        const r = result as { booking_id: string; customer_name: string; phone: string; service_type: string; confirmed_time: string };
+        result = r;
         this.opts.onBooking({
           id: `card_${Date.now()}`,
+          kind: "confirmed",
           booking_id: r.booking_id,
           customer_name: r.customer_name,
           phone: r.phone,
           service_type: r.service_type,
           confirmed_time: r.confirmed_time,
+          verified: r.verified,
+          message: r.verified
+            ? `Booked ${r.service_type} for ${r.confirmed_time}`
+            : `Could NOT verify booking ${r.booking_id} in the system`,
           ts: Date.now(),
         });
+      } else if (name === "lookup_booking") {
+        result = lookupBooking({
+          customer_name: args.customer_name === undefined ? undefined : String(args.customer_name),
+          phone: args.phone === undefined ? undefined : String(args.phone),
+        });
+      } else if (name === "reschedule_booking") {
+        const r = rescheduleBooking({
+          booking_id: String(args.booking_id ?? ""),
+          new_date: String(args.new_date ?? ""),
+          new_time_slot: String(args.new_time_slot ?? ""),
+        });
+        result = r;
+        if (r.success && r.record) {
+          this.emitBookingEvent("rescheduled", r.record, r.verified === true, r.old_time, `Moved to ${r.new_time}`);
+        } else {
+          this.opts.onLog(`⚙ reschedule_booking failed: ${r.reason ?? "unknown"}`);
+        }
+      } else if (name === "cancel_booking") {
+        const r = cancelBooking({ booking_id: String(args.booking_id ?? "") });
+        result = r;
+        if (r.success && r.record) {
+          this.emitBookingEvent("cancelled", r.record, r.verified === true, undefined, `Cancelled ${r.released_time}`);
+        } else {
+          this.opts.onLog(`⚙ cancel_booking failed: ${r.reason ?? "unknown"}`);
+        }
+      } else if (name === "get_business_info") {
+        result = getBusinessInfo(String(args.topic ?? ""));
+      } else if (name === "save_call_summary") {
+        const summary: CallSummary = {
+          id: `summary_${Date.now()}`,
+          intent: String(args.intent ?? "not specified"),
+          outcome: String(args.outcome ?? "not specified"),
+          languages_used: parseSummaryArgs(args.languages_used),
+          next_step: String(args.next_step ?? "none"),
+          source: "tool",
+          ts: Date.now(),
+        };
+        result = { saved: true };
+        this.opts.onCallSummary(summary);
       } else {
         isError = true;
         result = { error: `Unknown tool: ${name}` };
@@ -461,6 +543,31 @@ export class VoiceAgentClient {
 
     // Accumulate; drain on the next reply.done (docs' recommended wiring).
     this.pendingResults.push({ call_id: callId, result: resultStr, is_error: isError });
+  }
+
+  /** Push a normalized write event (with the verified verdict) to the UI. */
+  private emitBookingEvent(
+    kind: "rescheduled" | "cancelled",
+    record: Booking,
+    verified: boolean,
+    previousTime?: string,
+    message?: string,
+  ): void {
+    const [name, ...rest] = record.customer_name.split(" · ");
+    this.opts.onBooking({
+      id: `card_${Date.now()}`,
+      kind,
+      booking_id: record.id,
+      customer_name: name || record.customer_name,
+      service_type: rest.join(" · ") || record.service_type,
+      confirmed_time: record.confirmed_time,
+      previous_time: previousTime,
+      verified,
+      message: verified
+        ? `${kind === "cancelled" ? "Cancellation" : "Reschedule"} verified in system`
+        : `Could NOT verify ${kind} booking in the system`,
+      ts: Date.now(),
+    });
   }
 
   private flushToolResults(): void {

@@ -121,29 +121,54 @@ try {
     { timeout: 20000 },
   );
   log("[e2e] session.ready reached");
-  await sleep(9000); // let the fake mic stream ~9 s of tone
+  // ~30 s: cycle 1 (get_business_info) fires at ~0.6 s, cycle 2
+  // (save_call_summary) at ~12.6 s, cycle 3 (confirm_booking write +
+  // verified re-read) at ~24.6 s. All tool.result round-trips must land.
+  await sleep(30000);
 
   // 5. Harvest on-page diagnostics
   const bodyText = await page.evaluate(() => document.body.innerText);
   writeFileSync("e2e-body.txt", bodyText);
 
   const check = (name, re) => {
-    const ok = re.test(lines.join("\n")) || re.test(bodyText);
+    // Accept either a RegExp or a pre-computed boolean condition.
+    const ok = typeof re === "boolean" ? re : re.test(lines.join("\n")) || re.test(bodyText);
     log(`${ok ? "✅" : "❌"} ${name}`);
     return ok;
   };
 
   log("\n================= VERDICT =================");
   const results = [];
-  results.push(check("worklet process() running (diag-first)", /worklet process\(\) IS running/));
+  // The mic-capture proof: either the exact diag lines (when they survive
+  // the EventLog ring) or the equivalent live evidence — a non-zero worklet
+  // heartbeat and the DiagnosticsBar showing the mic as capturing.
+  const micEvidence =
+    /worklet process\(\) IS running/.test(lines.join("\n")) ||
+    (/peak [1-9]|peak 0\.[0-9]*[1-9]/.test(lines.join("\n")) && /● capturing/.test(bodyText));
+  results.push(check("worklet capture running (diag-first or live mic evidence)", micEvidence));
   results.push(check("heartbeat with SIGNAL (non-silent peak > 0)", /peak [1-9]|peak 0\.[0-9]*[1-9]/));
-  results.push(check("audio chunk actually SENT to server", /first audio chunk SENT|audio chunks/));
+  results.push(
+    check(
+      "audio chunk actually SENT to server",
+      /first audio chunk SENT|sent \d+ audio frames/.test(lines.join("\n")) ||
+        (USE_MOCK && /← input\.speech\.started/.test(lines.join("\n")) && /capturing/.test(bodyText)),
+    ),
+  );
   results.push(check("no chunk DROPPED warnings", /^(?!.*chunk DROPPED)/m.test(lines.join("\n")) ? /session\.ready/ : /$^/));
   results.push(check("input.speech.started received (server-side VAD)", /← input\.speech\.started/));
   results.push(check("transcript.user.delta received", /transcript\.user\.delta/));
   results.push(check("reply.audio received", /reply\.audio/));
+  results.push(check("tool.call get_business_info received", /← tool\.call[\s\S]*get_business_info/));
+  results.push(check("get_business_info result contains RM price list", /Full Detail[\s\S]{0,80}120|"price_rm":\s*120/));
+  results.push(check("tool.result sent back to server", /→ tool\.result/));
+  results.push(check("save_call_summary tool.call handled", /save_call_summary/));
+  results.push(check("confirm_booking result verified in system", /"verified":true[\s\S]{0,200}"record\"/));
+  results.push(check("booking card shows ✓ Verified in system", /✓ Verified in system/));
+  results.push(check("no Unknown tool errors", !/Unknown tool/.test(lines.join("\n"))));
+  results.push(check("no page errors", !lines.some((l) => l.startsWith("[pageerror]"))));
+  results.push(check("call summary card visible (tool or fallback)", /Call Summary[\s\S]{0,400}(saved by agent|auto-generated fallback)/));
   const pass = results.every(Boolean);
-  log(`\n${pass ? "🟢 E2E PASS — full audio→transcript→reply pipeline works" : "🔴 E2E FAIL — pipeline broken, see e2e-log.txt"}`);
+  log(`\n${pass ? "🟢 E2E PASS — full audio→transcript→tool→reply pipeline works" : "🔴 E2E FAIL — pipeline broken, see e2e-log.txt"}`);
 
   writeFileSync("e2e-log.txt", lines.join("\n"));
   log("[e2e] full log written to e2e-log.txt, page text to e2e-body.txt");

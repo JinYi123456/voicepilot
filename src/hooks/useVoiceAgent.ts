@@ -4,12 +4,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AgentStatus,
   BookingCard,
+  CallSummary,
   MicHealth,
   SlotView,
   ToolCallLog,
   VoiceAgentClient,
   WireDebug,
 } from "@/lib/voice-agent-client";
+import { getAvailability, getBookings, type Booking } from "@/lib/mock";
+import { detectLangTags } from "@/lib/language-tags";
 import {
   AGENT_VOICE,
   ENABLE_KEYTERMS,
@@ -21,7 +24,7 @@ import {
   TURN_DETECTION,
   TURN_DETECTION_SUMMARY,
 } from "@/lib/agent";
-import { TOOLS } from "@/lib/tools";
+import { TOOLS, TOOLS_SUMMARY } from "@/lib/tools";
 
 export type ChatEntry = {
   id: string;
@@ -51,6 +54,10 @@ export function useVoiceAgent() {
   const [bookings, setBookings] = useState<BookingCard[]>([]);
   const [availability, setAvailability] = useState<SlotView[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
+  /** Owner View: the full booking store (confirmed + rescheduled + cancelled). */
+  const [allBookings, setAllBookings] = useState<Booking[]>([]);
+  /** End-of-call summary card (agent tool) or the frontend fallback. */
+  const [callSummary, setCallSummary] = useState<CallSummary | null>(null);
 
   // Diagnostic status bar state
   const [micHealth, setMicHealth] = useState<MicHealth | null>(null);
@@ -64,8 +71,86 @@ export function useVoiceAgent() {
 
   const pushLog = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString("en-GB", { hour12: false });
-    setLogs((prev) => [...prev.slice(-160), `[${stamp}] ${line}`]);
+    // Bounded ring; sized so a 30 s+ session's early [diag] lines survive.
+    setLogs((prev) => [...prev.slice(-400), `[${stamp}] ${line}`]);
+    // Mirror the diagnostic milestones to DevTools — the on-page EventLog is
+    // a ring buffer and can age them out during long sessions.
+    if (/\[diag\]|Mic capture started|first audio chunk/.test(line)) {
+      console.log(`[VoicePilot] ${line}`);
+    }
   }, []);
+
+  /** Re-read the mock store so the Owner View / availability board stay live. */
+  const refreshStore = useCallback(() => {
+    setAllBookings(getBookings());
+    setAvailability(getAvailability());
+  }, []);
+
+  /**
+   * Frontend fallback summary — built from the transcript and the tool log
+   * when the agent never called save_call_summary. No LLM involved.
+   */
+  const buildFallbackSummary = useCallback(
+    (finalEntries: ChatEntry[]): CallSummary => {
+      const userTurns = finalEntries.filter((e) => e.role === "user").map((e) => e.text);
+      const writeTools = new Set(["confirm_booking", "reschedule_booking", "cancel_booking"]);
+      let lastWrite: ToolCallLog | null = null;
+      let lastWriteVerified = true;
+      for (const c of toolCalls) {
+        if (writeTools.has(c.name)) {
+          try {
+            const r = JSON.parse(c.result) as { verified?: boolean };
+            lastWriteVerified = r.verified !== false;
+          } catch {
+            lastWriteVerified = true;
+          }
+          lastWrite = c;
+        }
+      }
+
+      const topicWords = userTurns.join(" ").toLowerCase();
+      const askedPrice = /price|how much|多少钱|rm| harga/.test(topicWords);
+      const askedHours = /open|hours|几点|营业|buka/.test(topicWords);
+      const askedLocation = /where|address|地址|alamat|location/.test(topicWords);
+      const intentBits: string[] = [];
+      if (lastWrite?.name === "cancel_booking") intentBits.push("cancel a booking");
+      else if (lastWrite?.name === "reschedule_booking") intentBits.push("reschedule a booking");
+      else if (lastWrite) intentBits.push("book a car wash service");
+      if (askedPrice) intentBits.push("asked about prices");
+      if (askedHours) intentBits.push("asked about opening hours");
+      if (askedLocation) intentBits.push("asked about location");
+      if (intentBits.length === 0) intentBits.push("general enquiry");
+
+      const outcome = lastWrite
+        ? `${lastWrite.name} completed${lastWriteVerified ? " and verified in system" : " (⚠ verification failed)"}`
+        : `enquiry only — no booking written${askedPrice || askedHours || askedLocation ? " (info provided via get_business_info)" : ""}`;
+
+      const nextStep = lastWrite
+        ? lastWrite.name === "cancel_booking"
+          ? "rebook later if customer calls back"
+          : "customer arrives at the booked slot"
+        : "customer may call back to book";
+
+      const langs: string[] = [];
+      for (const t of userTurns) {
+        for (const tag of detectLangTags(t)) {
+          const full = tag === "中" ? "Chinese" : tag === "BM" ? "Malay" : "English";
+          if (!langs.includes(full)) langs.push(full);
+        }
+      }
+
+      return {
+        id: `summary_fallback_${Date.now()}`,
+        intent: intentBits.join("; "),
+        outcome,
+        languages_used: langs.length ? langs : ["English"],
+        next_step: nextStep,
+        source: "fallback",
+        ts: Date.now(),
+      };
+    },
+    [toolCalls],
+  );
 
   const start = useCallback(async () => {
     if (clientRef.current) return;
@@ -73,13 +158,16 @@ export function useVoiceAgent() {
     setStatusDetail("");
     setAvailability([]);
     setWireDebug({});
+    setCallSummary(null);
+    setBookings([]);
+    refreshStore(); // seed the Owner View with the seeded demo bookings
 
     const client = new VoiceAgentClient({
       // Computed on every Start Call so "Today is ..." is always current.
       systemPrompt: buildSystemPrompt(new Date()),
       greeting: GREETING,
       voice: AGENT_VOICE,
-      tools: TOOLS,
+      tools: [...TOOLS, ...TOOLS_SUMMARY],
       keyterms: ENABLE_KEYTERMS ? KEYTERMS : [],
       languageCodes: ENABLE_LANGUAGE_CODES ? LANGUAGE_CODES : [],
       turnDetection: {
@@ -120,8 +208,15 @@ export function useVoiceAgent() {
           { id: nextId(), role: "agent", text, interrupted, ts: Date.now() },
         ]);
       },
-      onToolCall: (call) => setToolCalls((prev) => [call, ...prev].slice(0, 12)),
+      onToolCall: (call) => {
+        setToolCalls((prev) => [call, ...prev].slice(0, 30));
+        // Writes (confirm/reschedule/cancel) mutate the mock store — re-read.
+        if (["confirm_booking", "reschedule_booking", "cancel_booking"].includes(call.name)) {
+          refreshStore();
+        }
+      },
       onBooking: (card) => setBookings((prev) => [card, ...prev]),
+      onCallSummary: (summary) => setCallSummary(summary),
       onLog: pushLog,
       onError: (msg) => setError(msg),
       onMicHealth: (h) => setMicHealth(h),
@@ -130,9 +225,20 @@ export function useVoiceAgent() {
 
     clientRef.current = client;
     await client.start();
-  }, [pushLog]);
+  }, [pushLog, refreshStore]);
 
   const end = useCallback(() => {
+    // Fallback: if the agent never saved a summary, build one locally from
+    // the finalized transcript + tool log (no LLM call).
+    setEntries((current) => {
+      setCallSummary((prev) => {
+        if (prev) return prev;
+        const hasConversation = current.some((e) => e.role === "user") || toolCalls.length > 0;
+        return hasConversation ? buildFallbackSummary(current) : prev;
+      });
+      return current;
+    });
+
     clientRef.current?.end();
     clientRef.current = null;
     setUserPartial("");
@@ -140,7 +246,7 @@ export function useVoiceAgent() {
     setMicHealth(null);
     setSttActive(false);
     setSttHadResult(false);
-  }, []);
+  }, [buildFallbackSummary, toolCalls]);
 
   // Allow restart once a session has ended or failed.
   useEffect(() => {
@@ -160,10 +266,13 @@ export function useVoiceAgent() {
   const reset = useCallback(() => {
     setEntries([]);
     setToolCalls([]);
+    setBookings([]);
+    setCallSummary(null);
     setUserPartial("");
     setAgentPartial("");
     setError("");
-  }, []);
+    refreshStore();
+  }, [refreshStore]);
 
   return {
     status,
@@ -180,6 +289,8 @@ export function useVoiceAgent() {
     sttActive,
     sttHadResult,
     wireDebug,
+    allBookings,
+    callSummary,
     start,
     end,
     reset,

@@ -4,7 +4,8 @@ import { useVoiceAgent } from "@/hooks/useVoiceAgent";
 import { StatusPill } from "@/components/StatusPill";
 import { TranscriptPane } from "@/components/TranscriptPane";
 import { BookingCardView } from "@/components/BookingCardView";
-import { ToolCallLogView } from "@/components/ToolCallLogView";
+import { OwnerView } from "@/components/owner-view";
+import { SummaryCardView } from "@/components/SummaryCardView";
 import { AvailabilityPanel } from "@/components/AvailabilityPanel";
 import { EventLog } from "@/components/EventLog";
 import { DiagnosticsBar } from "@/components/DiagnosticsBar";
@@ -25,6 +26,8 @@ export default function Home() {
     sttActive,
     sttHadResult,
     wireDebug,
+    allBookings,
+    callSummary,
     start,
     end,
   } = useVoiceAgent();
@@ -45,7 +48,7 @@ export default function Home() {
               <h1 className="text-lg font-bold tracking-tight">
                 VoicePilot
                 <span className="ml-2 text-xs font-normal text-zinc-500">
-                  Multilingual AI Voice Receptionist
+                  Multilingual AI Voice Front Desk · Sunrise Car Wash
                 </span>
               </h1>
               <p className="text-[11px] text-zinc-500">
@@ -117,11 +120,11 @@ export default function Home() {
           <aside className="flex flex-col gap-4 lg:h-[calc(100vh-150px)] lg:overflow-y-auto lg:pr-1">
             <div>
               <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">
-                Booking Confirmations
+                Write Confirmations
               </h2>
               {bookings.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-line bg-panel/40 p-6 text-center text-xs text-zinc-600">
-                  Once confirm_booking succeeds, the confirmation card pops in here
+                  Once confirm_booking / reschedule / cancel succeeds, the result card pops in here
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -132,10 +135,22 @@ export default function Home() {
               )}
             </div>
 
-            <AvailabilityPanel slots={availability} />
+            <OwnerView bookings={allBookings} calls={toolCalls} availability={availability} />
 
-            <ToolCallLogView calls={toolCalls} />
+            <AvailabilityPanel slots={availability} />
           </aside>
+
+          {/* call summary (Tier 2) renders under the grid when available */}
+          {callSummary && (
+            <section className="lg:col-span-2">
+              <h2 className="mb-2 text-xs font-semibold uppercase tracking-wider text-zinc-500">
+                Call Summary
+              </h2>
+              <div className="max-w-md">
+                <SummaryCardView summary={callSummary} />
+              </div>
+            </section>
+          )}
         </div>
       </div>
     </main>

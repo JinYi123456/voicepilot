@@ -2,11 +2,32 @@
 
 import { useEffect, useRef } from "react";
 import { ChatEntry } from "@/hooks/useVoiceAgent";
+import { detectLangTags } from "@/lib/language-tags";
+
+/** Tag pills shown next to each caller turn — e.g. [EN] [中] [BM]. */
+function LangBadges({ text }: { text: string }) {
+  const tags = detectLangTags(text);
+  return (
+    <span className="ml-2 inline-flex translate-y-[-1px] items-center gap-1 align-middle">
+      {tags.map((t) => (
+        <span
+          key={t}
+          title={`detected from transcript (${t === "BM" ? "Malay" : t === "中" ? "Chinese" : "English"})`}
+          className="rounded bg-zinc-700/60 px-1.5 py-0.5 text-[9px] font-bold leading-none text-zinc-300"
+        >
+          {t}
+        </span>
+      ))}
+      <span className="text-[8.5px] font-normal text-zinc-600">detected from transcript</span>
+    </span>
+  );
+}
 
 /**
  * Live transcript pane — the demo's left-stage visual focus.
  * Finalized turns stack up; the in-flight partial renders on top with a
- * blinking typewriter cursor.
+ * blinking typewriter cursor. Caller turns carry per-utterance language
+ * tags computed locally from the transcript text (NOT API-provided).
  */
 export function TranscriptPane({
   entries,
@@ -49,6 +70,7 @@ export function TranscriptPane({
                 Caller
               </span>
               {e.text}
+              <LangBadges text={e.text} />
             </div>
           </div>
         ) : (

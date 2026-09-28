@@ -4,13 +4,23 @@
  * present. Implements the protocol subset the client needs:
  *
  *   session.update → session.ready (config echo)
- *   input.audio    → input.speech.started → transcript.user.delta ×5 →
+ *   input.audio    → input.speech.started → transcript.user.delta ×N →
  *                    transcript.user → reply.started → reply.audio ×3 →
  *                    transcript.agent → reply.done
+ *   tool.call      (server → client) → tool.result (client → server)
+ *                  → next reply uses the tool result
  *   session.end    → session.ended
  *
- * Also logs the amount of audio received, so the test can assert that the
- * browser actually streamed PCM through the whole pipeline.
+ * The scenario is fixed and deterministic:
+ *   cycle 1: caller asks about prices → server emits tool.call
+ *            get_business_info{topic:"prices"} → the client MUST run the
+ *            browser-side logic and send tool.result back → the server then
+ *            answers using the returned prices → reply.done
+ *   cycle 2: caller says goodbye → tool.call save_call_summary →
+ *            tool.result → farewell reply → reply.done
+ *
+ * This exercises the full tool loop (call → browser execution → result →
+ * next reply) without a real API key.
  *
  * Usage: node scripts/mock-voice-agent-server.mjs <port>
  */
@@ -28,8 +38,35 @@ const toneB64 = Buffer.from(tone.buffer).toString("base64");
 
 wss.on("connection", (ws) => {
   let audioChunks = 0;
+  let cycle = 0; // 1 = prices enquiry, 2 = goodbye + summary
   const log = (m) => console.log(`[mock-server] ${m}`);
   log("client connected");
+
+  /** One full turn: partials → final → reply audio → agent text → reply.done */
+  function sendCycle({ partials, finalText, agentText, replyId, toolCall }) {
+    ws.send(JSON.stringify({ type: "input.speech.started" }));
+    partials.forEach((text, i) =>
+      setTimeout(() => ws.send(JSON.stringify({ type: "transcript.user.delta", item_id: `u${replyId}_${i}`, text })), i * 250),
+    );
+    const after = partials.length * 250 + 150;
+    setTimeout(() => {
+      ws.send(JSON.stringify({ type: "transcript.user", item_id: `u_${replyId}`, text: finalText }));
+      ws.send(JSON.stringify({ type: "reply.started", reply_id: replyId, item_id: `a_${replyId}` }));
+      for (let k = 0; k < 3; k++) {
+        ws.send(JSON.stringify({ type: "reply.audio", data: toneB64 }));
+      }
+      if (toolCall) {
+        // Server asks the client to execute a tool mid-reply.
+        ws.send(JSON.stringify({ type: "tool.call", call_id: `call_${replyId}`, name: toolCall.name, arguments: toolCall.arguments }));
+        log(`tool.call emitted: ${toolCall.name} ${JSON.stringify(toolCall.arguments)}`);
+      }
+      ws.send(
+        JSON.stringify({ type: "transcript.agent", reply_id: replyId, item_id: `a_${replyId}`, interrupted: false, text: agentText }),
+      );
+      ws.send(JSON.stringify({ type: "reply.done", reply_id: replyId, status: "completed" }));
+      log(`cycle ${cycle} delivered (${toolCall ? "with tool.call" : "no tool"})`);
+    }, after);
+  }
 
   ws.on("message", (raw) => {
     let msg;
@@ -42,6 +79,8 @@ wss.on("connection", (ws) => {
     switch (msg.type) {
       case "session.update": {
         log("session.update received → session.ready");
+        const tools = (msg.session?.tools ?? []).map((t) => t.name);
+        log(`session tools: ${tools.join(", ")}`);
         ws.send(
           JSON.stringify({
             type: "session.ready",
@@ -57,28 +96,99 @@ wss.on("connection", (ws) => {
       case "input.audio": {
         audioChunks++;
         if (audioChunks === 1) log("first input.audio chunk received");
-        // After ~0.6 s of streamed audio (~30 chunks @ 20 ms), emit a full
-        // conversation cycle as if the caller had spoken.
-        if (audioChunks === 30) {
-          log("enough audio buffered → emitting speech/transcript/reply cycle");
-          ws.send(JSON.stringify({ type: "input.speech.started" }));
-          const partials = ["Hi, I'd like to", "Hi, I'd like to book", "Hi, I'd like to book tomorrow"];
-          partials.forEach((text, i) =>
-            setTimeout(() => ws.send(JSON.stringify({ type: "transcript.user.delta", item_id: `u${i}`, text })), i * 250),
-          );
-          setTimeout(() => {
-            ws.send(JSON.stringify({ type: "transcript.user", item_id: "u_final", text: "Hi, I'd like to book tomorrow afternoon" }));
-            ws.send(JSON.stringify({ type: "reply.started", reply_id: "r1", item_id: "a1" }));
-            for (let k = 0; k < 3; k++) {
-              ws.send(JSON.stringify({ type: "reply.audio", data: toneB64 }));
-            }
-            ws.send(
-              JSON.stringify({ type: "transcript.agent", reply_id: "r1", item_id: "a1", interrupted: false, text: "Sure, tomorrow afternoon works. What time?" }),
-            );
-            ws.send(JSON.stringify({ type: "reply.done", reply_id: "r1", status: "completed" }));
-            log("conversation cycle delivered");
-          }, partials.length * 250 + 150);
+        // After ~0.6 s of streamed audio (~30 chunks @ 20 ms), run cycle 1:
+        // a prices question that requires the get_business_info tool.
+        if (audioChunks === 30 && cycle === 0) {
+          cycle = 1;
+          log("enough audio buffered → prices enquiry with get_business_info tool.call");
+          sendCycle({
+            partials: ["Hi, how much is the", "Hi, how much is the Full Detail"],
+            finalText: "Hi, how much is the Full Detail?",
+            agentText: "Let me check the price list for you.",
+            replyId: "r1",
+            toolCall: { name: "get_business_info", arguments: { topic: "prices" } },
+          });
         }
+        // Cycle 2 fires 12 s later: goodbye + save_call_summary tool.call.
+        setTimeout(() => {
+          if (cycle === 1 && ws.readyState === ws.OPEN) {
+            cycle = 2;
+            log("goodbye turn with save_call_summary tool.call");
+            sendCycle({
+              partials: ["Okay that's all,", "Okay that's all, thank you, bye"],
+              finalText: "Okay that's all, thank you, bye!",
+              agentText: "Thank you for calling Sunrise Car Wash. Goodbye!",
+              replyId: "r2",
+              toolCall: {
+                name: "save_call_summary",
+                arguments: {
+                  intent: "asked about Full Detail price",
+                  outcome: "price quoted from get_business_info, no booking made",
+                  languages_used: ["English"],
+                  next_step: "customer may call back to book",
+                },
+              },
+            });
+          }
+        }, 12000);
+        // Cycle 3 fires 24 s in: a full write — confirm_booking, whose result
+        // must carry verified:true and light up the Owner View + card badge.
+        setTimeout(() => {
+          if (ws.readyState !== ws.OPEN) return;
+          cycle = 3;
+          const tomorrow = new Date(Date.now() + 24 * 3600 * 1000);
+          const iso = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`;
+          log("confirm turn with confirm_booking tool.call");
+          sendCycle({
+            partials: ["Please book a Full Detail", "Please book a Full Detail tomorrow 3pm for Test Buyer"],
+            finalText: "Please book a Full Detail tomorrow 3pm, I'm Test Buyer, 012-9990001.",
+            agentText: "Let me book that for you.",
+            replyId: "r3",
+            toolCall: {
+              name: "confirm_booking",
+              arguments: {
+                customer_name: "Test Buyer",
+                phone: "012-9990001",
+                service_type: "Full Detail",
+                confirmed_time: `${iso} 15:00`,
+              },
+            },
+          });
+        }, 24000);
+        break;
+      }
+
+      case "tool.result": {
+        log(
+          `tool.result received for ${msg.call_id} (is_error=${msg.is_error}) → answering from tool data`,
+        );
+        let answer = "Thanks, I have the details.";
+        try {
+          const data = JSON.parse(msg.result);
+          if (msg.call_id === "call_r1" && Array.isArray(data.prices)) {
+            const detail = data.prices.find((p) => /full detail/i.test(p.service));
+            answer = detail
+              ? `Our Full Detail is ${data.currency === "RM (Malaysian Ringgit)" ? "120 ringgit" : String(detail.price_rm) + " ringgit"}.`
+              : "Sorry, I could not find that price.";
+          } else if (msg.call_id === "call_r2") {
+            answer = "Thanks for calling Sunrise Car Wash. Goodbye!";
+          } else if (msg.call_id === "call_r3") {
+            answer =
+              data.verified === true
+                ? "Booked — Full Detail tomorrow at 3, and it is verified in the system."
+                : "Booked, but I could not verify it in the system — sorry about that.";
+          }
+        } catch {
+          /* keep generic answer */
+        }
+        // The post-result reply (uses the tool result, per docs wiring).
+        ws.send(JSON.stringify({ type: "reply.started", reply_id: `${msg.call_id}_b` }));
+        for (let k = 0; k < 2; k++) {
+          ws.send(JSON.stringify({ type: "reply.audio", data: toneB64 }));
+        }
+        ws.send(JSON.stringify({ type: "transcript.agent", reply_id: `${msg.call_id}_b`, item_id: `b_${msg.call_id}`, interrupted: false, text: answer }));
+        ws.send(JSON.stringify({ type: "reply.done", reply_id: `${msg.call_id}_b`, status: "completed" }));
+        log(`post-tool reply: "${answer}"`);
         break;
       }
 
