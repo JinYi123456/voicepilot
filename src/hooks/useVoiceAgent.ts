@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AgentStatus,
   BookingCard,
+  MicHealth,
   SlotView,
   ToolCallLog,
   VoiceAgentClient,
@@ -40,6 +41,11 @@ export function useVoiceAgent() {
   const [availability, setAvailability] = useState<SlotView[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
 
+  // Diagnostic status bar state
+  const [micHealth, setMicHealth] = useState<MicHealth | null>(null);
+  const [sttActive, setSttActive] = useState(false);
+  const [sttHadResult, setSttHadResult] = useState(false);
+
   const pushLog = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString("en-GB", { hour12: false });
     setLogs((prev) => [...prev.slice(-160), `[${stamp}] ${line}`]);
@@ -63,9 +69,20 @@ export function useVoiceAgent() {
         if (s === "ready") {
           setAvailability(client.getAvailabilityView());
         }
+        if (s === "listening") setSttActive(true);
       },
-      onUserDelta: (text) => setUserPartial(text),
+      onUserDelta: (text) => {
+        setUserPartial(text);
+        if (text) {
+          setSttActive(true);
+          setSttHadResult(true); // a server transcript delta is definitive proof STT sees us
+        }
+      },
       onUserFinal: (text) => {
+        if (text) {
+          setSttActive(true);
+          setSttHadResult(true);
+        }
         setEntries((prev) => [
           ...prev,
           { id: nextId(), role: "user", text, ts: Date.now() },
@@ -82,6 +99,7 @@ export function useVoiceAgent() {
       onBooking: (card) => setBookings((prev) => [card, ...prev]),
       onLog: pushLog,
       onError: (msg) => setError(msg),
+      onMicHealth: (h) => setMicHealth(h),
     });
 
     clientRef.current = client;
@@ -93,6 +111,9 @@ export function useVoiceAgent() {
     clientRef.current = null;
     setUserPartial("");
     setAgentPartial("");
+    setMicHealth(null);
+    setSttActive(false);
+    setSttHadResult(false);
   }, []);
 
   // Allow restart once a session has ended or failed.
@@ -129,6 +150,9 @@ export function useVoiceAgent() {
     bookings,
     availability,
     logs,
+    micHealth,
+    sttActive,
+    sttHadResult,
     start,
     end,
     reset,

@@ -12,6 +12,12 @@ export const dynamic = "force-dynamic";
  *   &max_session_duration_seconds=1800 (session cap once connected)
  */
 export async function GET() {
+  // Hermetic e2e mode (NEXT_PUBLIC_MOCK_VOICE_WS set): return a dummy token
+  // so the browser can complete the handshake against the local mock server.
+  if (process.env.NEXT_PUBLIC_MOCK_VOICE_WS) {
+    return NextResponse.json({ token: "mock-token-for-e2e" });
+  }
+
   const apiKey = process.env.ASSEMBLYAI_API_KEY;
   if (!apiKey) {
     return NextResponse.json(

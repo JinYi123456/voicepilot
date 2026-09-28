@@ -15,3 +15,10 @@ yarn-error.log*
 .DS_Store
 *.tsbuildinfo
 next-env.d.ts
+
+# local e2e artifacts
+e2e-log.txt
+e2e-body.txt
+
+# local tool state
+.freebuff/

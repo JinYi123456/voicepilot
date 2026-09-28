@@ -7,6 +7,7 @@ import { BookingCardView } from "@/components/BookingCardView";
 import { ToolCallLogView } from "@/components/ToolCallLogView";
 import { AvailabilityPanel } from "@/components/AvailabilityPanel";
 import { EventLog } from "@/components/EventLog";
+import { DiagnosticsBar } from "@/components/DiagnosticsBar";
 
 export default function Home() {
   const {
@@ -19,6 +20,9 @@ export default function Home() {
     bookings,
     availability,
     logs,
+    micHealth,
+    sttActive,
+    sttHadResult,
     start,
     end,
   } = useVoiceAgent();
@@ -73,6 +77,14 @@ export default function Home() {
             {error}
           </div>
         )}
+
+        {/* Diagnostic status bar — plain-language health of the two stages */}
+        <DiagnosticsBar
+          inCall={inCall}
+          mic={micHealth}
+          sttActive={sttActive}
+          sttHadResult={sttHadResult}
+        />
 
         {/* ------------------------------------------------ main grid */}
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[1fr_380px]">

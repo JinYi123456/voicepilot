@@ -71,9 +71,24 @@ export type VoiceAgentClientOptions = {
   onBooking: (card: BookingCard) => void;
   onLog: (line: string) => void;
   onError: (message: string) => void;
+  onMicHealth: (health: MicHealth) => void;
 };
 
-const WS_BASE = "wss://agents.assemblyai.com/v1/ws";
+const WS_BASE =
+  process.env.NEXT_PUBLIC_MOCK_VOICE_WS || "wss://agents.assemblyai.com/v1/ws";
+
+/**
+ * Audio-path health snapshot, rendered by the diagnostic status bar in the
+ * UI so a non-technical user can see which stage fails without DevTools.
+ */
+export type MicHealth = {
+  /** true once any PCM chunk has been captured by the worklet */
+  capturing: boolean;
+  /** 0..1 approximate input level from the latest worklet heartbeat */
+  level: number;
+  /** true once the mic MediaStream track reports "live" and enabled */
+  trackLive: boolean;
+};
 const TARGET_RATE = 24000;
 
 export class VoiceAgentClient {
@@ -92,6 +107,18 @@ export class VoiceAgentClient {
   private activeSources: AudioBufferSourceNode[] = [];
   private pendingResults: { call_id: string; result: string; is_error: boolean }[] = [];
   private lastEventWasReplyDone = false;
+
+  // --- audio-path diagnostics (temporary, for the no-utterance bug hunt) ---
+  private loggedDropNotReady = false;
+  private chunksSent = 0;
+  private lastSendLog = 0;
+  // mic health state surfaced to the UI status bar
+  private micCapturing = false;
+  private micLevel = 0;
+  // audio batching queue (~100 ms frames)
+  private sendQueue: ArrayBuffer[] = [];
+  private sendQueueBytes = 0;
+  private sendTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(opts: VoiceAgentClientOptions) {
     this.opts = opts;
@@ -151,6 +178,19 @@ export class VoiceAgentClient {
       this.cleanupAudio();
       return;
     }
+
+    // Diagnostics: is the MediaStream track actually alive?
+    const track = this.micStream.getAudioTracks()[0];
+    this.opts.onLog(
+      track
+        ? `[diag] mic track: enabled=${track.enabled} readyState=${track.readyState} label="${track.label}"`
+        : "[diag] getUserMedia returned NO audio track",
+    );
+    this.opts.onMicHealth({
+      capturing: false,
+      level: 0,
+      trackLive: Boolean(track && track.readyState === "live" && track.enabled),
+    });
 
     // 3. WebSocket — one connection for audio in/out, transcripts, tools.
     const wsUrl = new URL(WS_BASE);
@@ -223,6 +263,11 @@ export class VoiceAgentClient {
     const type = msg.type as string | undefined;
     if (!type) return;
     this.opts.onLog(`← ${type}`);
+    // Console mirror — every server frame lands in DevTools for diagnosis.
+    console.log(`[VoicePilot] ← ${type}`);
+    if (type === "session.ready") {
+      console.log("[VoicePilot] session.ready config echo:", msg);
+    }
 
     switch (type) {
       case "session.ready": {
@@ -406,15 +451,35 @@ export class VoiceAgentClient {
     });
     this.worklet = worklet;
 
-    worklet.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
-      if (!this.sessionReady || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-      const bytes = new Uint8Array(e.data);
-      let binary = "";
-      const CHUNK = 0x8000;
-      for (let i = 0; i < bytes.length; i += CHUNK) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    worklet.port.onmessage = (e: MessageEvent<unknown>) => {
+      // Diagnostic messages from the worklet (object payloads).
+      if (e.data && typeof e.data === "object" && "type" in (e.data as Record<string, unknown>)) {
+        const d = e.data as { type: string; [key: string]: unknown };
+        if (d.type === "diag-first") {
+          this.opts.onLog(
+            `[diag] worklet process() IS running (context rate ${d.inputSampleRate} Hz)`,
+          );
+          this.micCapturing = true;
+          this.emitMicHealth();
+        } else if (d.type === "diag") {
+          const peak = typeof d.peak === "number" ? d.peak : 0;
+          this.opts.onLog(
+            `[diag] worklet ~${d.blocksPerSec} blocks/s, ${d.nonZeroBlocksPerSec} with signal, peak ${peak} (${d.inputSampleRate}Hz→${d.targetSampleRate}Hz)`,
+          );
+          this.micLevel = Math.min(1, peak * 4); // boost speech range into the meter
+          this.micCapturing = true;
+          this.emitMicHealth();
+        }
+        return;
       }
-      this.ws.send(JSON.stringify({ type: "input.audio", audio: btoa(binary) }));
+      if (!(e.data instanceof ArrayBuffer)) return;
+
+      // Batch tiny worklet quanta (128 samples ≈ 2.7 ms @24 kHz) into ~100 ms
+      // input.audio frames — the e2e logs showed 375 msgs/s when sending per
+      // quantum, which needlessly hammers the socket.
+      this.sendQueue.push(e.data);
+      this.sendQueueBytes += e.data.byteLength;
+      if (this.sendQueueBytes >= 4800) this.flushAudioQueue();
     };
 
     // The worklet doesn't need to reach the speakers; connect through a
@@ -422,7 +487,10 @@ export class VoiceAgentClient {
     const sink = ctx.createGain();
     sink.gain.value = 0;
     source.connect(worklet).connect(sink).connect(ctx.destination);
-    this.opts.onLog("Mic capture started (24 kHz PCM16, echo cancellation on)");
+    // Drain any partial ~100 ms frame on a fixed timer so the stream keeps
+    // flowing even when worklet quanta don't align to the byte budget.
+    this.sendTimer = setInterval(() => this.flushAudioQueue(), 100);
+    this.opts.onLog("Mic capture started (24 kHz PCM16, 100 ms frames, echo cancellation on)");
   }
 
   private playAudioChunk(b64: string): void {
@@ -468,7 +536,61 @@ export class VoiceAgentClient {
     }
   }
 
+  private flushAudioQueue(): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      // Hold audio (don't drop) until session.ready; log the wait once.
+      if (!this.loggedDropNotReady && this.sendQueueBytes > 0) {
+        this.loggedDropNotReady = true;
+        this.opts.onLog("[diag] audio buffered — waiting for session.ready before first send");
+      }
+      return;
+    }
+    if (this.sendQueueBytes === 0) return;
+    const merged = new Uint8Array(this.sendQueueBytes);
+    let offset = 0;
+    for (const buf of this.sendQueue) {
+      merged.set(new Uint8Array(buf), offset);
+      offset += buf.byteLength;
+    }
+    this.sendQueue = [];
+    this.sendQueueBytes = 0;
+
+    let binary = "";
+    const CHUNK = 0x8000;
+    for (let i = 0; i < merged.length; i += CHUNK) {
+      binary += String.fromCharCode(...merged.subarray(i, i + CHUNK));
+    }
+    try {
+      this.ws.send(JSON.stringify({ type: "input.audio", audio: btoa(binary) }));
+      this.chunksSent++;
+      const now = performance.now();
+      if (now - this.lastSendLog >= 2000) {
+        this.opts.onLog(
+          this.lastSendLog === 0
+            ? "[diag] first audio chunk SENT to server"
+            : `[diag] sent ${this.chunksSent} audio frames in the last 2s`,
+        );
+        this.chunksSent = 0;
+        this.lastSendLog = now;
+      }
+    } catch (err) {
+      this.opts.onLog(`[diag] ws.send(input.audio) failed: ${String(err)}`);
+    }
+  }
+
+  private emitMicHealth(): void {
+    this.opts.onMicHealth({
+      capturing: this.micCapturing,
+      level: this.micLevel,
+      trackLive: true,
+    });
+  }
+
   private cleanupAudio(): void {
+    if (this.sendTimer) {
+      clearInterval(this.sendTimer);
+      this.sendTimer = null;
+    }
     this.worklet?.disconnect();
     this.worklet = null;
     this.micStream?.getTracks().forEach((t) => t.stop());
