@@ -20,7 +20,6 @@ export const TOOLS = [
       },
       required: ["service_type", "date", "time_slot"],
     },
-    execution_mode: "interactive" as const,
   },
   {
     type: "function" as const,
@@ -37,6 +36,5 @@ export const TOOLS = [
       },
       required: ["service_type", "confirmed_time"],
     },
-    execution_mode: "interactive" as const,
   },
 ];

@@ -8,6 +8,7 @@ import { ToolCallLogView } from "@/components/ToolCallLogView";
 import { AvailabilityPanel } from "@/components/AvailabilityPanel";
 import { EventLog } from "@/components/EventLog";
 import { DiagnosticsBar } from "@/components/DiagnosticsBar";
+import { WireDebugPanel } from "@/components/WireDebugPanel";
 
 export default function Home() {
   const {
@@ -23,6 +24,7 @@ export default function Home() {
     micHealth,
     sttActive,
     sttHadResult,
+    wireDebug,
     start,
     end,
   } = useVoiceAgent();
@@ -85,6 +87,9 @@ export default function Home() {
           sttActive={sttActive}
           sttHadResult={sttHadResult}
         />
+
+        {/* Fixed wire-level debug: what we send, what the server echoes */}
+        <WireDebugPanel debug={wireDebug} />
 
         {/* ------------------------------------------------ main grid */}
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[1fr_380px]">

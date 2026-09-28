@@ -1,4 +1,38 @@
 /**
+ * Turn detection — how long the agent waits before deciding you're done.
+ *
+ * 数值越大，AI 等你越久，但回答也越慢。
+ * (The bigger the values, the longer the AI waits for you — but the slower
+ * it answers.)
+ *
+ * Docs (voice-agents/voice-agent-api/turn-detection-and-interruptions):
+ *   vad_threshold      0.0–1.0, default 0.5. Speech-detection sensitivity;
+ *                      LOWER is more sensitive. Raise it in a loud room.
+ *   min_silence        ms of quiet before a pause counts as end-of-turn.
+ *                      Default: adaptive. Starter example: 1000, "try 1800".
+ *   max_silence        ms ceiling before end-of-turn is forced, even
+ *                      mid-thought. Default: adaptive. Starter example: 3000.
+ *   interrupt_response keep true — barge-in must stay enabled.
+ *
+ * ⚠️ Setting min/max silence disables the server's adaptive pacing and
+ * entity-aware waiting (e.g. waiting for a full phone number) for the whole
+ * session. The docs' preferred knob is input.transcription_mode="max_accuracy"
+ * — try that first if this isn't patient enough.
+ *
+ * All four values live here; the Wire Debug panel on the page shows what is
+ * actually being sent.
+ */
+export const TURN_DETECTION = {
+  vad_threshold: 0.5, // default; only included so it's tunable in one place
+  min_silence: 800,
+  max_silence: 2500,
+  interrupt_response: true,
+};
+
+/** One-line summary rendered in the on-page Wire Debug panel. */
+export const TURN_DETECTION_SUMMARY = `vad_threshold=${TURN_DETECTION.vad_threshold}, min_silence=${TURN_DETECTION.min_silence}ms, max_silence=${TURN_DETECTION.max_silence}ms, interrupt_response=${TURN_DETECTION.interrupt_response}`;
+
+/**
  * System prompt — hard-coded per the hackathon brief. Rules are written in
  * English; rule #2 keeps its original code-mixed example (that mixed sentence
  * is itself part of the product spec, not a translation target).
@@ -62,3 +96,17 @@ export const KEYTERMS = [
  * demo mixes. The model still code-switches natively mid-sentence.
  */
 export const LANGUAGE_CODES = ["en", "zh", "yue", "ms"];
+
+/**
+ * Agent voice. The official starter's minimal agent uses "anna".
+ */
+export const AGENT_VOICE = "anna";
+
+/**
+ --- FEATURE FLAGS (bisection harness) ---
+ * The official minimal session.update sends NONE of these. They are added
+ * back one at a time (set to true, test, repeat) to find which one breaks
+ * transcription on the real API.
+ */
+export const ENABLE_KEYTERMS = false;
+export const ENABLE_LANGUAGE_CODES = false;

@@ -143,6 +143,23 @@ src/
 public/worklets/pcm-processor.js  # Mic capture worklet (24 kHz PCM16 + resampling)
 ```
 
+## Tuning turn-taking (don't let the agent interrupt slow speakers)
+
+The agent decides "the caller is done" after a pause. All knobs live in one place — `TURN_DETECTION` at the top of `src/lib/agent.ts` — and the exact values being sent are shown live in the page's **Wire Debug** panel:
+
+| Field | What it means | Default here | Suggested range |
+| --- | --- | --- | --- |
+| `vad_threshold` | Speech-detection sensitivity, 0.0–1.0. **Lower = more sensitive.** Raise it in a loud room so background noise isn't treated as speech. | `0.5` | 0.3–0.7 |
+| `min_silence` | Milliseconds of quiet before a pause counts as **end-of-turn**. The bigger the value, the longer the AI waits for you — but the slower it answers. | `800` | 600–2000 (official starter ships 1000, suggests trying 1800 for patient/interview-style agents) |
+| `max_silence` | Milliseconds ceiling before end-of-turn is **forced**, even mid-thought. Must be ≥ `min_silence`. | `2500` | 2000–4000 (starter: 3000) |
+| `interrupt_response` | Barge-in. Keep `true` so callers can always interrupt the agent; `false` reads disclaimers to the end. | `true` | keep `true` |
+
+Rules of thumb (per the [turn detection docs](https://www.assemblyai.com/docs/voice-agents/voice-agent-api/turn-detection-and-interruptions)):
+
+- The platform is **semantic and adaptive by default** — it decides you're done from meaning, paces itself to the speaker's rhythm, and waits out full values (phone numbers, dates) your tools need. Prefer leaving `min_silence`/`max_silence` unset unless slow, multi-sentence, code-mixed speakers keep getting cut off — which is exactly this demo's audience, hence the explicit values.
+- ⚠️ Setting `min_silence`/`max_silence` **disables adaptive pacing and entity-aware waiting** for the whole session. The docs' preferred gentle knob is `input.transcription_mode: "max_accuracy"` (waits longest in silence); try it before pushing raw thresholds higher.
+- If the agent keeps interrupting itself, the mic is re-capturing its own TTS — use headphones or keep echo cancellation enabled (we do).
+
 ## Roadmap (slides only — not implemented in code)
 
 - Real WhatsApp / SMS API integration

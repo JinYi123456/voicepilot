@@ -8,8 +8,19 @@ import {
   SlotView,
   ToolCallLog,
   VoiceAgentClient,
+  WireDebug,
 } from "@/lib/voice-agent-client";
-import { GREETING, KEYTERMS, LANGUAGE_CODES, SYSTEM_PROMPT } from "@/lib/agent";
+import {
+  AGENT_VOICE,
+  ENABLE_KEYTERMS,
+  ENABLE_LANGUAGE_CODES,
+  GREETING,
+  KEYTERMS,
+  LANGUAGE_CODES,
+  SYSTEM_PROMPT,
+  TURN_DETECTION,
+  TURN_DETECTION_SUMMARY,
+} from "@/lib/agent";
 import { TOOLS } from "@/lib/tools";
 
 export type ChatEntry = {
@@ -46,6 +57,11 @@ export function useVoiceAgent() {
   const [sttActive, setSttActive] = useState(false);
   const [sttHadResult, setSttHadResult] = useState(false);
 
+  // Fixed on-page wire-debug panel; seeded with the turn_detection summary
+  const [wireDebug, setWireDebug] = useState<WireDebug>({
+    turnDetection: TURN_DETECTION_SUMMARY,
+  });
+
   const pushLog = useCallback((line: string) => {
     const stamp = new Date().toLocaleTimeString("en-GB", { hour12: false });
     setLogs((prev) => [...prev.slice(-160), `[${stamp}] ${line}`]);
@@ -56,13 +72,21 @@ export function useVoiceAgent() {
     setError("");
     setStatusDetail("");
     setAvailability([]);
+    setWireDebug({});
 
     const client = new VoiceAgentClient({
       systemPrompt: SYSTEM_PROMPT,
       greeting: GREETING,
+      voice: AGENT_VOICE,
       tools: TOOLS,
-      keyterms: KEYTERMS,
-      languageCodes: LANGUAGE_CODES,
+      keyterms: ENABLE_KEYTERMS ? KEYTERMS : [],
+      languageCodes: ENABLE_LANGUAGE_CODES ? LANGUAGE_CODES : [],
+      turnDetection: {
+        vadThreshold: TURN_DETECTION.vad_threshold,
+        minSilence: TURN_DETECTION.min_silence,
+        maxSilence: TURN_DETECTION.max_silence,
+        interruptResponse: TURN_DETECTION.interrupt_response,
+      },
       onStatus: (s, detail) => {
         setStatus(s);
         setStatusDetail(detail ?? "");
@@ -100,6 +124,7 @@ export function useVoiceAgent() {
       onLog: pushLog,
       onError: (msg) => setError(msg),
       onMicHealth: (h) => setMicHealth(h),
+      onWireDebug: (patch) => setWireDebug((prev) => ({ ...prev, ...patch })),
     });
 
     clientRef.current = client;
@@ -153,6 +178,7 @@ export function useVoiceAgent() {
     micHealth,
     sttActive,
     sttHadResult,
+    wireDebug,
     start,
     end,
     reset,

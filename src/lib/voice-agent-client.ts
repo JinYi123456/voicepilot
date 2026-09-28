@@ -56,12 +56,28 @@ export type SlotView = {
   taken: boolean;
 };
 
+export type WireDebug = {
+  sessionUpdate?: string;
+  wsHost?: string;
+  sessionReadyConfig?: string;
+  error?: string;
+  errors?: string[];
+  turnDetection?: string;
+};
+
 export type VoiceAgentClientOptions = {
   systemPrompt: string;
   greeting: string;
+  voice: string;
   tools: unknown[];
   keyterms: string[];
   languageCodes: string[];
+  turnDetection: {
+    vadThreshold: number;
+    minSilence: number;
+    maxSilence: number;
+    interruptResponse: boolean;
+  };
   onStatus: (status: AgentStatus, detail?: string) => void;
   onUserDelta: (text: string) => void;
   onUserFinal: (text: string) => void;
@@ -72,6 +88,7 @@ export type VoiceAgentClientOptions = {
   onLog: (line: string) => void;
   onError: (message: string) => void;
   onMicHealth: (health: MicHealth) => void;
+  onWireDebug: (debug: WireDebug) => void;
 };
 
 const WS_BASE =
@@ -165,7 +182,7 @@ export class VoiceAgentClient {
 
     try {
       this.micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: false },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -199,25 +216,40 @@ export class VoiceAgentClient {
     this.ws = ws;
 
     ws.addEventListener("open", () => {
-      this.opts.onLog("WebSocket connected — sending session.update (inline config)");
-      ws.send(
-        JSON.stringify({
-          type: "session.update",
-          session: {
-            system_prompt: this.opts.systemPrompt,
-            greeting: this.opts.greeting,
-            input: {
-              format: { encoding: "audio/pcm", sample_rate: TARGET_RATE },
-              keyterms: this.opts.keyterms,
-              language_codes: this.opts.languageCodes,
-            },
-            output: {
-              format: { encoding: "audio/pcm", sample_rate: TARGET_RATE },
-            },
-            tools: this.opts.tools,
+      this.opts.onLog("WebSocket connected — sending session.update (minimal official shape)");
+      // Official minimal inline shape: system_prompt, greeting, output.voice,
+      // output.format.encoding, tools. input carries format.encoding plus the
+      // tuned turn_detection timing. keyterms / language_codes remain opt-in
+      // via feature flags for bisection.
+      const input: Record<string, unknown> = {
+        format: { encoding: "audio/pcm" },
+        turn_detection: {
+          vad_threshold: this.opts.turnDetection.vadThreshold,
+          min_silence: this.opts.turnDetection.minSilence,
+          max_silence: this.opts.turnDetection.maxSilence,
+          interrupt_response: this.opts.turnDetection.interruptResponse,
+        },
+      };
+      if (this.opts.keyterms.length > 0) input.keyterms = this.opts.keyterms;
+      if (this.opts.languageCodes.length > 0) input.language_codes = this.opts.languageCodes;
+      const sessionUpdate = {
+        type: "session.update",
+        session: {
+          system_prompt: this.opts.systemPrompt,
+          greeting: this.opts.greeting,
+          input,
+          output: {
+            voice: this.opts.voice,
+            format: { encoding: "audio/pcm" },
           },
-        }),
-      );
+          tools: this.opts.tools,
+        },
+      };
+      this.opts.onWireDebug({
+        sessionUpdate: JSON.stringify(sessionUpdate, null, 2),
+        wsHost: wsUrl.host,
+      });
+      ws.send(JSON.stringify(sessionUpdate));
     });
 
     ws.addEventListener("message", (event) => {
@@ -273,6 +305,7 @@ export class VoiceAgentClient {
       case "session.ready": {
         this.sessionReady = true;
         this.opts.onStatus("ready", String(msg.session_id ?? ""));
+        this.opts.onWireDebug({ sessionReadyConfig: JSON.stringify(msg.config ?? msg, null, 2) });
         this.startCapture();
         // Greeting audio will arrive as reply.audio; playback is generic.
         break;
@@ -365,6 +398,7 @@ export class VoiceAgentClient {
         const message = String(msg.message ?? "unknown error");
         this.opts.onError(`${code}: ${message}`);
         this.opts.onStatus("error", `${code}: ${message}`);
+        this.opts.onWireDebug({ error: JSON.stringify(msg) });
         break;
       }
 
