@@ -23,6 +23,11 @@ export function AvailabilityPanel({ slots }: { slots: SlotView[] }) {
       <div className="mb-2 flex items-center justify-between">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
           Merchant Availability (Mock)
+          {(() => {
+            const n = new Date();
+            const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+            return <span className="ml-1.5 font-mono text-[10px] normal-case tracking-normal text-accent/80">· today {today}</span>;
+          })()}
         </span>
         <span className="flex items-center gap-2 text-[9px] text-zinc-500">
           <span className="flex items-center gap-1">

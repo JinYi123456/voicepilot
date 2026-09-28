@@ -49,6 +49,37 @@ Behavior rules:
 7. Be warm and professional, like a reliable local business receptionist, not a stiff robot.`;
 
 /**
+ * Language output rules — what the agent may SAY (the voice speaks only
+ * English/Italian/Spanish/German/Portuguese/French per the official voices
+ * docs — no Chinese/Cantonese/Malay output voices exist, so Chinese input
+ * must be answered in English).
+ */
+export const LANGUAGE_RULES = `
+
+Language output rules:
+- Understand any mix of English, Mandarin, Cantonese and Malay from the caller.
+- Always reply in clear, simple English by default.
+- If the caller speaks Malay, you may reply in short, casual Malaysian Malay (use "boleh", "tak", "nak"), not Indonesian.
+- Never reply using Chinese characters, because the voice cannot speak them. If the caller uses Chinese, reply in English.
+- Keep replies short since they are spoken aloud.`;
+
+/**
+ * Build the runtime system prompt. The dynamic "Today is ..." block is
+ * computed in the browser on every Start Call so the model never has to
+ * guess the current date (it used to invent e.g. 2025-03-29).
+ */
+export function buildSystemPrompt(now: Date = new Date()): string {
+  const iso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const weekday = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][now.getDay()];
+  return `${SYSTEM_PROMPT}
+
+Today is ${iso} (${weekday}), timezone Asia/Kuala_Lumpur (GMT+8).
+Resolve relative dates (today, tomorrow, next Friday) from this date.
+The merchant only accepts bookings within the next 7 days.
+When calling tools, use date as YYYY-MM-DD and time_slot as 24-hour HH:00, e.g. 15:00.${LANGUAGE_RULES}`;
+}
+
+/**
  * Greeting — spoken by the agent as soon as the session is ready.
  */
 export const GREETING =

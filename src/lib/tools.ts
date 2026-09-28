@@ -13,10 +13,22 @@ export const TOOLS = [
     parameters: {
       type: "object" as const,
       properties: {
-        service_type: { type: "string" as const },
-        date: { type: "string" as const },
-        time_slot: { type: "string" as const },
-        party_size: { type: "number" as const },
+        service_type: {
+          type: "string" as const,
+          description: "Service the customer wants, e.g. car wash",
+        },
+        date: {
+          type: "string" as const,
+          description: "Booking date in YYYY-MM-DD format",
+        },
+        time_slot: {
+          type: "string" as const,
+          description: 'Start time in 24-hour format on the hour, e.g. "15:00"',
+        },
+        party_size: {
+          type: "number" as const,
+          description: "Number of people or cars, default 1",
+        },
       },
       required: ["service_type", "date", "time_slot"],
     },
@@ -29,10 +41,22 @@ export const TOOLS = [
     parameters: {
       type: "object" as const,
       properties: {
-        customer_name: { type: "string" as const },
-        phone: { type: "string" as const },
-        service_type: { type: "string" as const },
-        confirmed_time: { type: "string" as const },
+        customer_name: {
+          type: "string" as const,
+          description: "Customer's name as given verbally",
+        },
+        phone: {
+          type: "string" as const,
+          description: "Customer's contact phone number",
+        },
+        service_type: {
+          type: "string" as const,
+          description: "Service the customer wants, e.g. car wash",
+        },
+        confirmed_time: {
+          type: "string" as const,
+          description: 'Confirmed booking time in "YYYY-MM-DD HH:mm" format',
+        },
       },
       required: ["service_type", "confirmed_time"],
     },

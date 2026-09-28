@@ -17,7 +17,7 @@ import {
   GREETING,
   KEYTERMS,
   LANGUAGE_CODES,
-  SYSTEM_PROMPT,
+  buildSystemPrompt,
   TURN_DETECTION,
   TURN_DETECTION_SUMMARY,
 } from "@/lib/agent";
@@ -75,7 +75,8 @@ export function useVoiceAgent() {
     setWireDebug({});
 
     const client = new VoiceAgentClient({
-      systemPrompt: SYSTEM_PROMPT,
+      // Computed on every Start Call so "Today is ..." is always current.
+      systemPrompt: buildSystemPrompt(new Date()),
       greeting: GREETING,
       voice: AGENT_VOICE,
       tools: TOOLS,
