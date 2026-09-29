@@ -38,7 +38,9 @@ const toneB64 = Buffer.from(tone.buffer).toString("base64");
 
 wss.on("connection", (ws) => {
   let audioChunks = 0;
-  let cycle = 0; // 1 = prices enquiry, 2 = goodbye + summary
+  let cycle = 0; // 1 = prices enquiry, 2 = goodbye + summary, 3 = write
+  let scheduled2 = false;
+  let scheduled3 = false;
   const log = (m) => console.log(`[mock-server] ${m}`);
   log("client connected");
 
@@ -109,9 +111,12 @@ wss.on("connection", (ws) => {
             toolCall: { name: "get_business_info", arguments: { topic: "prices" } },
           });
         }
-        // Cycle 2 fires 12 s later: goodbye + save_call_summary tool.call.
-        setTimeout(() => {
-          if (cycle === 1 && ws.readyState === ws.OPEN) {
+        // Cycle 2 fires 12 s later (scheduled exactly ONCE): goodbye +
+        // save_call_summary tool.call.
+        if (!scheduled2 && audioChunks >= 30) {
+          scheduled2 = true;
+          setTimeout(() => {
+            if (cycle !== 1 || ws.readyState !== ws.OPEN) return;
             cycle = 2;
             log("goodbye turn with save_call_summary tool.call");
             sendCycle({
@@ -129,32 +134,36 @@ wss.on("connection", (ws) => {
                 },
               },
             });
-          }
-        }, 12000);
-        // Cycle 3 fires 24 s in: a full write — confirm_booking, whose result
-        // must carry verified:true and light up the Owner View + card badge.
-        setTimeout(() => {
-          if (ws.readyState !== ws.OPEN) return;
-          cycle = 3;
-          const tomorrow = new Date(Date.now() + 24 * 3600 * 1000);
-          const iso = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`;
-          log("confirm turn with confirm_booking tool.call");
-          sendCycle({
-            partials: ["Please book a Full Detail", "Please book a Full Detail tomorrow 3pm for Test Buyer"],
-            finalText: "Please book a Full Detail tomorrow 3pm, I'm Test Buyer, 012-9990001.",
-            agentText: "Let me book that for you.",
-            replyId: "r3",
-            toolCall: {
-              name: "confirm_booking",
-              arguments: {
-                customer_name: "Test Buyer",
-                phone: "012-9990001",
-                service_type: "Full Detail",
-                confirmed_time: `${iso} 15:00`,
+          }, 12000);
+        }
+        // Cycle 3 fires 24 s in (scheduled exactly ONCE): a full write —
+        // confirm_booking, whose result must carry verified:true and light
+        // up the Owner View + card badge.
+        if (!scheduled3 && audioChunks >= 30) {
+          scheduled3 = true;
+          setTimeout(() => {
+            if (cycle !== 2 || ws.readyState !== ws.OPEN) return;
+            cycle = 3;
+            const tomorrow = new Date(Date.now() + 24 * 3600 * 1000);
+            const iso = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`;
+            log("confirm turn with confirm_booking tool.call");
+            sendCycle({
+              partials: ["Please book a Full Detail", "Please book a Full Detail tomorrow 3pm for Test Buyer"],
+              finalText: "Please book a Full Detail tomorrow 3pm, I'm Test Buyer, 012-9990001.",
+              agentText: "Let me book that for you.",
+              replyId: "r3",
+              toolCall: {
+                name: "confirm_booking",
+                arguments: {
+                  customer_name: "Test Buyer",
+                  phone: "012-9990001",
+                  service_type: "Full Detail",
+                  confirmed_time: `${iso} 15:00`,
+                },
               },
-            },
-          });
-        }, 24000);
+            });
+          }, 24000);
+        }
         break;
       }
 

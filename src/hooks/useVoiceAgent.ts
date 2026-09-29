@@ -11,7 +11,15 @@ import {
   VoiceAgentClient,
   WireDebug,
 } from "@/lib/voice-agent-client";
-import { getAvailability, getBookings, type Booking } from "@/lib/mock";
+import { getAvailability, getBookings, hydrateStore, resetStore, type Booking } from "@/lib/mock";
+import {
+  readActivity,
+  readSummary,
+  writeActivity,
+  writeSummary,
+  type ToolCallRecord,
+  type SummaryRecord,
+} from "@/lib/demo-storage";
 import { detectLangTags } from "@/lib/language-tags";
 import {
   AGENT_VOICE,
@@ -85,6 +93,15 @@ export function useVoiceAgent() {
     setAllBookings(getBookings());
     setAvailability(getAvailability());
   }, []);
+
+  // Restore the persisted demo store after mount (browser only — the module
+  // seeds render on the server, so hydration stays consistent).
+  useEffect(() => {
+    hydrateStore();
+    refreshStore();
+    setToolCalls(readActivity<ToolCallRecord>() ?? []);
+    setCallSummary(readSummary<SummaryRecord>());
+  }, [refreshStore]);
 
   /**
    * Frontend fallback summary — built from the transcript and the tool log
@@ -209,14 +226,21 @@ export function useVoiceAgent() {
         ]);
       },
       onToolCall: (call) => {
-        setToolCalls((prev) => [call, ...prev].slice(0, 30));
+        setToolCalls((prev) => {
+          const next = [call, ...prev].slice(0, 30);
+          writeActivity(next); // persist the activity log (newest first)
+          return next;
+        });
         // Writes (confirm/reschedule/cancel) mutate the mock store — re-read.
         if (["confirm_booking", "reschedule_booking", "cancel_booking"].includes(call.name)) {
-          refreshStore();
+          refreshStore(); // mock.ts persists the store on every write
         }
       },
       onBooking: (card) => setBookings((prev) => [card, ...prev]),
-      onCallSummary: (summary) => setCallSummary(summary),
+      onCallSummary: (summary) => {
+        setCallSummary(summary);
+        writeSummary(summary);
+      },
       onLog: pushLog,
       onError: (msg) => setError(msg),
       onMicHealth: (h) => setMicHealth(h),
@@ -271,6 +295,18 @@ export function useVoiceAgent() {
     setUserPartial("");
     setAgentPartial("");
     setError("");
+    writeActivity([]);
+    writeSummary(null);
+    refreshStore();
+  }, [refreshStore]);
+
+  /** Owner View "Reset demo data": wipe localStorage, reseed the store. */
+  const resetDemoData = useCallback(() => {
+    resetStore();
+    setToolCalls([]);
+    setBookings([]);
+    setCallSummary(null);
+    setEntries([]);
     refreshStore();
   }, [refreshStore]);
 
@@ -294,5 +330,6 @@ export function useVoiceAgent() {
     start,
     end,
     reset,
+    resetDemoData,
   };
 }

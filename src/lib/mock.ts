@@ -5,7 +5,20 @@
  * Availability: next 7 days (today + 6), 09:00–18:00, one slot per hour.
  * ~30% of slots are deterministically pre-marked as taken (seeded PRNG so
  * a demo run shows the same picture; bookings also mark slots taken live).
+ *
+ * Persistence: the store mirrors itself into localStorage under the
+ * `voicepilot:v1:` prefix (see demo-storage.ts) so a page refresh keeps the
+ * bookings, occupancy and activity log. All persistence is client-side and
+ * best-effort: storage failures degrade to the in-memory store.
  */
+
+import {
+  readAvailability,
+  readBookings,
+  writeAvailability,
+  writeBookings,
+  clearDemoStorage,
+} from "@/lib/demo-storage";
 
 export type Slot = {
   /** ISO date, e.g. "2026-09-28" */
@@ -93,21 +106,24 @@ function buildAvailability(): Slot[] {
   return slots;
 }
 
-const availability: Slot[] = buildAvailability();
+let availability: Slot[] = buildAvailability();
 
-const bookings: Booking[] = BOOKING_SEEDS.map((seed, i) => {
-  // Seed bookings land on day+2 so they always sit inside the bookable
-  // window regardless of when the demo runs.
-  const d = new Date();
-  d.setDate(d.getDate() + 2 + i);
-  const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  const hour = 10 + i * 4; // 10:00 and 14:00
-  const time = `${String(hour).padStart(2, "0")}:00`;
-  // Seed slots count as taken on the availability board.
-  const slot = availability.find((s) => s.date === iso && s.time === time);
-  if (slot) slot.taken = true;
-  return { ...seed, confirmed_time: `${iso} ${time}`, created_at: new Date().toISOString() };
-});
+/** Fresh seed bookings anchored to today+2/+3 so they always sit in-window. */
+function buildSeededBookings(table: Slot[]): Booking[] {
+  return BOOKING_SEEDS.map((seed, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() + 2 + i);
+    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const hour = 10 + i * 4; // 10:00 and 14:00
+    const time = `${String(hour).padStart(2, "0")}:00`;
+    // Seed slots count as taken on the availability board.
+    const slot = table.find((s) => s.date === iso && s.time === time);
+    if (slot) slot.taken = true;
+    return { ...seed, confirmed_time: `${iso} ${time}`, created_at: new Date().toISOString() };
+  });
+}
+
+let bookings: Booking[] = buildSeededBookings(availability);
 
 /** Weekday helpers for the mock store (Monday = 1 … Sunday = 7). */
 function isoToWeekday(iso: string): string | null {
@@ -331,6 +347,7 @@ export function confirmBooking(input: ConfirmBookingInput): ConfirmBookingOutput
     const slot = findSlot(dateMatch[1], input.confirmed_time);
     if (slot) slot.taken = true;
   }
+  persist();
 
   const { verified, record } = verifyBooking(booking.id, {
     status: "confirmed",
@@ -473,6 +490,7 @@ export function rescheduleBooking(input: RescheduleBookingInput): RescheduleBook
     confirmed_time: newConfirmed,
     status: "rescheduled",
   });
+  persist();
 
   return {
     success: true,
@@ -519,6 +537,7 @@ export function cancelBooking(input: CancelBookingInput): CancelBookingOutput {
   booking.status = "cancelled";
 
   const { verified, record } = verifyBooking(booking.id, { status: "cancelled" });
+  persist();
 
   return {
     success: true,
@@ -530,6 +549,94 @@ export function cancelBooking(input: CancelBookingInput): CancelBookingOutput {
     verified,
     record: record ?? booking,
   };
+}
+
+// ------------------------------------------------------------- persistence
+
+function persist(): void {
+  writeBookings(bookings);
+  writeAvailability(availability);
+}
+
+/**
+ * Re-anchor the availability table to "today" and re-mark occupancy from the
+ * archived bookings. Used when restoring from localStorage (the archived 7-day
+ * window may start on an earlier day).
+ */
+function todayIsoDate(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * Restore the demo store from localStorage after mount (browser only, never
+ * during SSR — the module state already holds fresh seeds for the server
+ * render, so hydration stays consistent). Corrupted archives degrade to the
+ * fresh seeds. Expired-date handling per the demo spec:
+ * - the availability table is ALWAYS rebuilt from today's date;
+ * - bookings whose date has passed stay listed in the Owner View (shown as
+ *   "past") but no longer occupy any slot;
+ * - bookings still inside the window re-take their slot on the fresh table.
+ * The (possibly re-anchored) store is written back so a later refresh sees
+ * the same picture.
+ */
+export function hydrateStore(): void {
+  const archived = readBookings<Booking>();
+  const archivedSlots = readAvailability<Slot>();
+
+  // Always rebuild the table from today — the archive may span earlier days.
+  availability = buildAvailability();
+
+  if (archived) {
+    // Keep every record (Owner View history), normalize the status field.
+    bookings = archived.map((b) => ({
+      ...b,
+      status: b.status === "cancelled" || b.status === "rescheduled" ? b.status : "confirmed",
+    }));
+  } else {
+    bookings = buildSeededBookings(availability);
+  }
+
+  // Archived slot table is only reused for its taken flags; a missing or
+  // corrupted archive simply leaves the freshly-seeded flags (~30% taken).
+  const archivedTaken = new Set(
+    (archivedSlots ?? []).filter((s) => s.taken).map((s) => `${s.date} ${s.time}`),
+  );
+  const today = todayIsoDate();
+  for (const slot of availability) {
+    const key = `${slot.date} ${slot.time}`;
+    if (slot.taken) continue; // already pre-seeded as taken
+    if (slot.date < today) continue; // yesterday's occupancy is irrelevant
+    if (archivedTaken.has(key)) slot.taken = true;
+  }
+
+  // Re-take slots for bookings still inside the window (non-cancelled).
+  for (const b of bookings) {
+    if (b.status === "cancelled") continue;
+    const dateMatch = /(\d{4}-\d{2}-\d{2})/.exec(b.confirmed_time);
+    if (!dateMatch || dateMatch[1] < today) continue;
+    const slot = availability.find((s) => s.date === dateMatch[1] && s.time === b.confirmed_time.slice(-5));
+    if (slot) slot.taken = true;
+  }
+
+  persist();
+}
+
+/**
+ * Reset demo data — wipe every `voicepilot:v1:*` localStorage entry and
+ * reseed the in-memory store (fresh table + fresh seed bookings).
+ */
+export function resetStore(): void {
+  clearDemoStorage();
+  availability = buildAvailability();
+  bookings = buildSeededBookings(availability);
+  persist();
+}
+
+/** True when the booking's date is before today (Owner View "past" badge). */
+export function isPastBooking(booking: Booking): boolean {
+  const m = /(\d{4}-\d{2}-\d{2})/.exec(booking.confirmed_time);
+  return Boolean(m && m[1] < todayIsoDate());
 }
 
 /** Full booking list for the Owner View (includes cancelled/rescheduled). */

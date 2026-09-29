@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { ToolCallLogView } from "@/components/ToolCallLogView";
 import { BookingCard, ToolCallLog } from "@/lib/voice-agent-client";
-import { statusLabel } from "@/lib/mock";
+import { isPastBooking, statusLabel } from "@/lib/mock";
 import type { Booking } from "@/lib/mock";
 
 const WRITE_TOOLS = new Set(["confirm_booking", "reschedule_booking", "cancel_booking"]);
@@ -34,13 +34,17 @@ export function OwnerView({
   bookings,
   calls,
   availability,
+  onResetDemo,
 }: {
   bookings: Booking[];
   calls: ToolCallLog[];
   /** Count of open slots, to show the owner the day's capacity at a glance. */
   availability: { taken: boolean }[];
+  /** "Reset demo data" — clears the localStorage archive and reseeds. */
+  onResetDemo: () => void;
 }) {
   const [tab, setTab] = useState<"bookings" | "activity">("bookings");
+  const [confirming, setConfirming] = useState(false);
 
   const openSlots = availability.filter((s) => !s.taken).length;
   const totalSlots = availability.length;
@@ -113,6 +117,11 @@ export function OwnerView({
                       >
                         {statusLabel(b.status)}
                       </span>
+                      {isPastBooking(b) && (
+                        <span className="ml-1 inline-block rounded-full border border-zinc-600/60 bg-zinc-700/30 px-1.5 py-0.5 text-[9px] font-semibold text-zinc-400">
+                          past
+                        </span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -129,6 +138,41 @@ export function OwnerView({
             </p>
             <ToolCallLogView calls={calls} />
           </>
+        )}
+      </div>
+
+      {/* footer: storage note + reset (two-step confirm) */}
+      <div className="flex items-center justify-between gap-2 border-t border-line px-3 py-2">
+        <p className="text-[9.5px] leading-tight text-zinc-600">
+          Demo data is stored in this browser only (localStorage). A real
+          deployment would use a database.
+        </p>
+        {confirming ? (
+          <span className="flex shrink-0 items-center gap-1">
+            <span className="text-[10px] text-warn">Sure?</span>
+            <button
+              onClick={() => {
+                setConfirming(false);
+                onResetDemo();
+              }}
+              className="rounded border border-danger/50 bg-danger/15 px-2 py-1 text-[10px] font-semibold text-danger transition hover:bg-danger/25"
+            >
+              Yes, reset
+            </button>
+            <button
+              onClick={() => setConfirming(false)}
+              className="rounded border border-line px-2 py-1 text-[10px] text-zinc-400 transition hover:text-zinc-200"
+            >
+              No
+            </button>
+          </span>
+        ) : (
+          <button
+            onClick={() => setConfirming(true)}
+            className="shrink-0 rounded border border-line px-2 py-1 text-[10px] font-semibold text-zinc-400 transition hover:border-danger/50 hover:text-danger"
+          >
+            ⟲ Reset demo data
+          </button>
         )}
       </div>
     </div>

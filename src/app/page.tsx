@@ -30,6 +30,7 @@ export default function Home() {
     callSummary,
     start,
     end,
+    resetDemoData,
   } = useVoiceAgent();
 
   const inCall = status !== "idle" && status !== "ended" && status !== "error";
@@ -135,7 +136,12 @@ export default function Home() {
               )}
             </div>
 
-            <OwnerView bookings={allBookings} calls={toolCalls} availability={availability} />
+            <OwnerView
+              bookings={allBookings}
+              calls={toolCalls}
+              availability={availability}
+              onResetDemo={resetDemoData}
+            />
 
             <AvailabilityPanel slots={availability} />
           </aside>

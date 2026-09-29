@@ -128,11 +128,54 @@ try {
 
   // 5. Harvest on-page diagnostics
   const bodyText = await page.evaluate(() => document.body.innerText);
-  writeFileSync("e2e-body.txt", bodyText);
 
-  const check = (name, re) => {
+  // 5b. Persistence phase (localStorage): the mock flow above wrote a
+  // "Test Buyer" booking via confirm_booking. Reload the page — the Owner
+  // View must still show it — then hit "Reset demo data" and confirm the
+  // store returns to the 2 seed bookings.
+  const dumpBookings = () =>
+    page.evaluate(() => {
+      const raw = localStorage.getItem("voicepilot:v1:bookings");
+      if (raw === null) return "<absent>";
+      try {
+        const arr = JSON.parse(raw);
+        return `<${arr.length} entries: ${arr.map((b) => String(b.customer_name).split(" ")[0]).join(",")}>`;
+      } catch {
+        return `<corrupt: ${raw.slice(0, 60)}>`;
+      }
+    });
+  log(`[e2e] bookings archive BEFORE reload: ${await dumpBookings()}`);
+
+  await page.reload({ waitUntil: "networkidle" });
+  // "slots open ·" only renders once hydrateStore() has run and the Owner
+  // View has re-rendered from the restored store (SSR shows "Bookings (0)").
+  await page.waitForFunction(
+    () => document.body.innerText.includes("slots open"),
+    { timeout: 20000 },
+  );
+  const afterReload = await page.evaluate(() => document.body.innerText);
+  log(`[e2e] bookings archive AFTER reload: ${await dumpBookings()}`);
+  const survivesReload = afterReload.includes("Test Buyer");
+  log(`[e2e] after reload: Test Buyer still in Owner View → ${survivesReload}`);
+
+  await page.getByRole("button", { name: /Reset demo data/i }).click();
+  await page.getByRole("button", { name: /Yes, reset/i }).click();
+  await page.waitForFunction(
+    () => document.body.innerText.includes("Bookings (2)"),
+    { timeout: 10000 },
+  );
+  const afterReset = await page.evaluate(() => document.body.innerText);
+  const resetOk = afterReset.includes("Bookings (2)") && !afterReset.includes("Test Buyer");
+  log(`[e2e] after reset: back to 2 seed bookings → ${resetOk}`);
+
+  // Re-harvest the full page text (post-reset state)
+  const bodyText2 = afterReset;
+  writeFileSync("e2e-body.txt", `${bodyText}\n\n===== AFTER RELOAD =====\n${afterReload}\n\n===== AFTER RESET =====\n${afterReset}`);
+
+  const check = (name, re, text = bodyText) => {
     // Accept either a RegExp or a pre-computed boolean condition.
-    const ok = typeof re === "boolean" ? re : re.test(lines.join("\n")) || re.test(bodyText);
+    const ok =
+      typeof re === "boolean" ? re : re.test(lines.join("\n")) || re.test(text) || re.test(bodyText2);
     log(`${ok ? "✅" : "❌"} ${name}`);
     return ok;
   };
@@ -167,6 +210,9 @@ try {
   results.push(check("no Unknown tool errors", !/Unknown tool/.test(lines.join("\n"))));
   results.push(check("no page errors", !lines.some((l) => l.startsWith("[pageerror]"))));
   results.push(check("call summary card visible (tool or fallback)", /Call Summary[\s\S]{0,400}(saved by agent|auto-generated fallback)/));
+  results.push(check("booking survives page reload (localStorage)", survivesReload));
+  results.push(check("Reset demo data returns to 2 seed bookings", resetOk));
+  results.push(check("localStorage note displayed in Owner View", /stored in this browser only \(localStorage\)/));
   const pass = results.every(Boolean);
   log(`\n${pass ? "🟢 E2E PASS — full audio→transcript→tool→reply pipeline works" : "🔴 E2E FAIL — pipeline broken, see e2e-log.txt"}`);
 

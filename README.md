@@ -119,6 +119,9 @@ The right column has an **Owner View** tab strip with:
 
 - **Bookings** — every record in the store, including `rescheduled` and `cancelled` ones (the seed bookings "Ali bin Abu" and "Mei Ling" are always there so the demo never starts empty), plus open-slot capacity at a glance.
 - **Activity Log** — every tool call with timestamp, arguments, JSON result and a ✓ verified / ✗ unverified badge on writes (the existing tool-call inspector, integrated here).
+- A **⟲ Reset demo data** button (with a confirmation step) wipes the archive and reseeds.
+
+**Persistence:** bookings, slot occupancy, the activity log and the last call summary are stored in the browser's `localStorage` under the `voicepilot:v1:` prefix, so a page refresh keeps the demo state. All reads/writes are try/catch-guarded and a corrupted archive falls back to fresh seeds. Stale dates are handled on load: the 7-day slot table is always rebuilt from today, past bookings stay listed in the Owner View with a "past" badge (they no longer occupy slots), and in-window bookings re-take their slots. Demo data is stored in this browser only — a real deployment would use a database.
 
 ## Demo script — the 5 test sentences
 
