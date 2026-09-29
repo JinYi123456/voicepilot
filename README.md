@@ -197,7 +197,7 @@ public/worklets/pcm-processor.js  # Mic capture worklet (24 kHz PCM16 + resampli
 
 ## Tuning turn-taking (don't let the agent interrupt slow speakers)
 
-The agent decides "the caller is done" after a pause. All knobs live in one place — `TURN_DETECTION` at the top of `src/lib/agent.ts` — and the exact values being sent are shown live in the page's **Wire Debug** panel:
+The agent decides "the caller is done" after a pause. All knobs live in one place — `TURN_DETECTION` at the top of `src/lib/agent.ts` — and the exact values being sent are shown live in the page's **Wire Debug** panel (hidden from the demo audience by default — open the page with `?debug=1` in the URL to also show the Wire Debug panel and the mic/speech Diagnostics bar):
 
 | Field | What it means | Default here | Suggested range |
 | --- | --- | --- | --- |

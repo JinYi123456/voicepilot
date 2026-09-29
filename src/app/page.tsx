@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo } from "react";
 import { useVoiceAgent } from "@/hooks/useVoiceAgent";
 import { StatusPill } from "@/components/StatusPill";
 import { TranscriptPane } from "@/components/TranscriptPane";
@@ -35,6 +36,17 @@ export default function Home() {
 
   const inCall = status !== "idle" && status !== "ended" && status !== "error";
   const listening = status === "listening" || status === "ready";
+
+  // Engineering panels (DiagnosticsBar + WireDebugPanel) are hidden from the
+  // demo audience by default — judges see a clean product page. Open with
+  // ?debug=1 in the URL (e.g. http://localhost:3000/?debug=1) to troubleshoot.
+  const showDebugPanels = useMemo(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("debug") === "1";
+    } catch {
+      return false;
+    }
+  }, []);
 
   return (
     <main className="grid-backdrop min-h-screen">
@@ -84,16 +96,18 @@ export default function Home() {
           </div>
         )}
 
-        {/* Diagnostic status bar — plain-language health of the two stages */}
-        <DiagnosticsBar
-          inCall={inCall}
-          mic={micHealth}
-          sttActive={sttActive}
-          sttHadResult={sttHadResult}
-        />
+        {/* Diagnostic status bar (debug only) — plain-language health of the two stages */}
+        {showDebugPanels && (
+          <DiagnosticsBar
+            inCall={inCall}
+            mic={micHealth}
+            sttActive={sttActive}
+            sttHadResult={sttHadResult}
+          />
+        )}
 
-        {/* Fixed wire-level debug: what we send, what the server echoes */}
-        <WireDebugPanel debug={wireDebug} />
+        {/* Fixed wire-level debug (debug only): what we send, what the server echoes */}
+        {showDebugPanels && <WireDebugPanel debug={wireDebug} />}
 
         {/* ------------------------------------------------ main grid */}
         <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[1fr_380px]">

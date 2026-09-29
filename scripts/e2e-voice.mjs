@@ -108,7 +108,16 @@ try {
     ws.on("close", () => log("[e2e] page WebSocket closed"));
   });
 
+  // First visit WITHOUT ?debug=1: the judge-facing default must be a clean
+  // product page — no Wire Debug panel, no mic/speech Diagnostics bar.
   await page.goto(BASE, { waitUntil: "networkidle" });
+  const cleanPanelsOk =
+    !(await page.evaluate(() => document.body.innerText)).includes("Wire Debug") &&
+    !(await page.evaluate(() => document.body.innerText)).includes("Mic capture");
+  log(`[e2e] default page hides debug panels → ${cleanPanelsOk}`);
+
+  // Reopen with ?debug=1 for the full pipeline run (engineering view).
+  await page.goto(`${BASE}/?debug=1`, { waitUntil: "networkidle" });
 
   // 4. Click Start Call
   const startBtn = page.getByRole("button", { name: /Start Call/i });
@@ -190,6 +199,7 @@ try {
     /worklet process\(\) IS running/.test(lines.join("\n")) ||
     (/peak [1-9]|peak 0\.[0-9]*[1-9]/.test(lines.join("\n")) && /● capturing/.test(bodyText));
   results.push(check("worklet capture running (diag-first or live mic evidence)", micEvidence));
+  results.push(check("default page hides debug panels (clean product view)", cleanPanelsOk));
   results.push(check("heartbeat with SIGNAL (non-silent peak > 0)", /peak [1-9]|peak 0\.[0-9]*[1-9]/));
   results.push(
     check(
