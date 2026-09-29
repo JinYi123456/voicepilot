@@ -283,6 +283,14 @@ export class VoiceAgentClient {
           tools: this.opts.tools,
         },
       };
+      // Permanent proof of WHICH tools went out — a stale dev-server build
+      // shipping an old tool set is exactly the kind of bug this surfaces.
+      const toolNames = this.opts.tools
+        .map((t) => (t as { name?: string }).name ?? "?")
+        .join(", ");
+      const toolsLine = `session.update tools (${this.opts.tools.length}): ${toolNames}`;
+      this.opts.onLog(`⚙ ${toolsLine}`);
+      console.log(`[VoicePilot] ⚙ ${toolsLine}`);
       this.opts.onWireDebug({
         sessionUpdate: JSON.stringify(sessionUpdate, null, 2),
         wsHost: wsUrl.host,
@@ -489,16 +497,27 @@ export class VoiceAgentClient {
           phone: args.phone === undefined ? undefined : String(args.phone),
         });
       } else if (name === "reschedule_booking") {
+        // new_date/new_time_slot are optional (name/phone/service-only
+        // corrections keep the current slot) — only pass what arrived.
         const r = rescheduleBooking({
           booking_id: String(args.booking_id ?? ""),
-          new_date: String(args.new_date ?? ""),
-          new_time_slot: String(args.new_time_slot ?? ""),
+          ...(args.new_date === undefined ? {} : { new_date: String(args.new_date) }),
+          ...(args.new_time_slot === undefined ? {} : { new_time_slot: String(args.new_time_slot) }),
+          ...(args.customer_name === undefined ? {} : { customer_name: String(args.customer_name) }),
+          ...(args.phone === undefined ? {} : { phone: String(args.phone) }),
+          ...(args.service_type === undefined ? {} : { service_type: String(args.service_type) }),
         });
         result = r;
         if (r.success && r.record) {
-          this.emitBookingEvent("rescheduled", r.record, r.verified === true, r.old_time, `Moved to ${r.new_time}`);
+          this.emitBookingEvent(
+            "rescheduled",
+            r.record,
+            r.verified === true,
+            r.old_time,
+            r.old_time ? `Moved to ${r.new_time}` : `Corrected record ${r.booking_id}`,
+          );
         } else {
-          this.opts.onLog(`⚙ reschedule_booking failed: ${r.reason ?? "unknown"}`);
+          this.opts.onLog(`⚙ ${name} failed: ${r.reason ?? "unknown"}`);
         }
       } else if (name === "cancel_booking") {
         const r = cancelBooking({ booking_id: String(args.booking_id ?? "") });
@@ -506,7 +525,7 @@ export class VoiceAgentClient {
         if (r.success && r.record) {
           this.emitBookingEvent("cancelled", r.record, r.verified === true, undefined, `Cancelled ${r.released_time}`);
         } else {
-          this.opts.onLog(`⚙ cancel_booking failed: ${r.reason ?? "unknown"}`);
+          this.opts.onLog(`⚙ ${name} failed: ${r.reason ?? "unknown"}`);
         }
       } else if (name === "get_business_info") {
         result = getBusinessInfo(String(args.topic ?? ""));

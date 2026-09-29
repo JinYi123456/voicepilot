@@ -186,6 +186,34 @@ wss.on("connection", (ws) => {
               data.verified === true
                 ? "Booked — Full Detail tomorrow at 3, and it is verified in the system."
                 : "Booked, but I could not verify it in the system — sorry about that.";
+            // Cycle 4 (8 s later): correct the customer's NAME on that booking
+            // via reschedule_booking — same_time kept, no second confirm.
+            const createdId = data.booking_id;
+            if (createdId && ws.readyState === ws.OPEN) {
+              setTimeout(() => {
+                if (ws.readyState !== ws.OPEN) return;
+                cycle = 4;
+                log(`cycle 4: name-fix via reschedule_booking on ${createdId}`);
+                sendCycle({
+                  partials: ["Sorry, the name was wrong —", "Sorry, the name was wrong — it's Test Buyer Renamed"],
+                  finalText: "Sorry, the name on that booking was wrong. It's Test Buyer Renamed.",
+                  agentText: "Let me fix that name for you.",
+                  replyId: "r4",
+                  toolCall: {
+                    name: "reschedule_booking",
+                    arguments: {
+                      booking_id: createdId,
+                      customer_name: "Test Buyer Renamed",
+                    },
+                  },
+                });
+              }, 8000);
+            }
+          } else if (msg.call_id === "call_r4") {
+            answer =
+              data.verified === true && /Renamed/.test(String(data.record?.customer_name ?? ""))
+                ? "Done — the name is corrected and verified in the system."
+                : "I could not verify that correction — sorry.";
           }
         } catch {
           /* keep generic answer */

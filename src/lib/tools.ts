@@ -86,7 +86,7 @@ export const TOOLS = [
     type: "function" as const,
     name: "reschedule_booking",
     description:
-      "Move an existing booking to a new date and time. Checks the new slot is free first and releases the old one. The result includes a verified field you MUST report to the customer.",
+      "Update an existing booking: move it to a new date/time and/or correct the customer name, phone or service. Checks the new slot is free before moving and releases the old one. Use this instead of calling confirm_booking again for an existing booking. The result includes a verified field you MUST report to the customer.",
     parameters: {
       type: "object" as const,
       properties: {
@@ -96,14 +96,26 @@ export const TOOLS = [
         },
         new_date: {
           type: "string" as const,
-          description: "New booking date in YYYY-MM-DD format",
+          description: "New booking date in YYYY-MM-DD format; keep the current date when only correcting a name",
         },
         new_time_slot: {
           type: "string" as const,
-          description: 'New start time in 24-hour format on the hour, e.g. "15:00"',
+          description: 'New start time in 24-hour format on the hour, e.g. "15:00"; keep the current time when only correcting a name',
+        },
+        customer_name: {
+          type: "string" as const,
+          description: "Corrected customer name, when the caller asks to change it; omit to keep the current name",
+        },
+        phone: {
+          type: "string" as const,
+          description: "Corrected contact phone number, when the caller asks to change it; omit to keep the current one",
+        },
+        service_type: {
+          type: "string" as const,
+          description: "Corrected service, when the caller asks to change it; omit to keep the current service",
         },
       },
-      required: ["booking_id", "new_date", "new_time_slot"],
+      required: ["booking_id"],
     },
   },
   {

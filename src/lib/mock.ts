@@ -404,8 +404,13 @@ export function lookupBooking(input: LookupBookingInput): LookupBookingOutput {
 
 export type RescheduleBookingInput = {
   booking_id: string;
-  new_date: string;
-  new_time_slot: string;
+  /** Optional — omit to keep the current date/time (e.g. name-only fix). */
+  new_date?: string;
+  new_time_slot?: string;
+  /** Optional field corrections. */
+  customer_name?: string;
+  phone?: string;
+  service_type?: string;
 };
 
 export type RescheduleBookingOutput = {
@@ -451,44 +456,64 @@ export function rescheduleBooking(input: RescheduleBookingInput): RescheduleBook
     return { success: false, reason: "booking_not_found" };
   }
 
-  const dateMatch = /(\d{4}-\d{2}-\d{2})/.exec(input.new_date ?? "");
-  const newTime = normalizeTimeSlot(input.new_time_slot ?? "");
-  if (!dateMatch || !newTime) {
+  // Field-only correction (name/phone/service) keeps the current slot when
+  // no new date/time is supplied — this is how a misspelled name gets fixed
+  // without creating a duplicate booking.
+  const dateMatch = input.new_date === undefined ? null : /(\d{4}-\d{2}-\d{2})/.exec(input.new_date);
+  const newTime = input.new_time_slot === undefined ? null : normalizeTimeSlot(input.new_time_slot);
+  if ((input.new_date !== undefined || input.new_time_slot !== undefined) && (!dateMatch || !newTime)) {
     return { success: false, reason: "unparseable_input" };
   }
-  const newDate = dateMatch[1];
-  const newConfirmed = `${newDate} ${newTime}`;
+  const newDate = dateMatch ? dateMatch[1] : null;
+  const newConfirmed = newDate && newTime ? `${newDate} ${newTime}` : booking.confirmed_time;
 
-  if (newConfirmed === booking.confirmed_time) {
+  if (newConfirmed === booking.confirmed_time && !input.customer_name && !input.phone && !input.service_type) {
     return { success: false, reason: "same_time", booking_id: booking.id };
   }
 
-  const target = availability.find((s) => s.date === newDate && s.time === newTime);
-  if (!target || target.taken) {
-    // Nearest open slots so the agent can propose alternatives.
-    const now = new Date();
-    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-    const alternatives: { date: string; time: string }[] = [];
-    const startKey = `${newDate} ${newTime}`;
-    for (const s of availability) {
-      if (s.taken || s.date < todayIso) continue;
-      if (`${s.date} ${s.time}` <= startKey) continue;
-      alternatives.push({ date: s.date, time: s.time });
-      if (alternatives.length >= 3) break;
+  // Slot validation only applies when the date/time actually changes — a
+  // name/phone/service correction must succeed even if the original slot is
+  // no longer on the table (e.g. a past booking).
+  const slotChanged = Boolean(newDate && newTime) && newConfirmed !== booking.confirmed_time;
+  let target: Slot | undefined;
+  if (newDate && newTime) {
+    target = availability.find((s) => s.date === newDate && s.time === newTime);
+    if (!target) {
+      return { success: false, reason: "slot_unavailable" };
     }
-    return { success: false, reason: "slot_unavailable", alternatives };
+    if (target.taken) {
+      // Nearest open slots so the agent can propose alternatives.
+      const now = new Date();
+      const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      const alternatives: { date: string; time: string }[] = [];
+      const startKey = `${newDate} ${newTime}`;
+      for (const s of availability) {
+        if (s.taken || s.date < todayIso) continue;
+        if (`${s.date} ${s.time}` <= startKey) continue;
+        alternatives.push({ date: s.date, time: s.time });
+        if (alternatives.length >= 3) break;
+      }
+      return { success: false, reason: "slot_unavailable", alternatives };
+    }
   }
 
   // Move it: release the old slot, take the new one, update the record.
-  releaseSlotOf(booking);
-  target.taken = true;
   const oldTime = booking.confirmed_time;
-  booking.confirmed_time = newConfirmed;
+  if (slotChanged) {
+    releaseSlotOf(booking);
+    target!.taken = true;
+    booking.confirmed_time = newConfirmed;
+  }
+  if (input.customer_name) booking.customer_name = input.customer_name;
+  if (input.phone) booking.phone = input.phone;
+  if (input.service_type) booking.service_type = input.service_type;
   booking.status = "rescheduled";
 
   const { verified, record } = verifyBooking(booking.id, {
     confirmed_time: newConfirmed,
     status: "rescheduled",
+    ...(input.customer_name ? { customer_name: input.customer_name } : {}),
+    ...(input.service_type ? { service_type: input.service_type } : {}),
   });
   persist();
 
@@ -496,7 +521,7 @@ export function rescheduleBooking(input: RescheduleBookingInput): RescheduleBook
     success: true,
     reason: null,
     booking_id: booking.id,
-    old_time: oldTime,
+    old_time: slotChanged ? oldTime : undefined,
     new_time: newConfirmed,
     service_type: booking.service_type,
     customer_name: booking.customer_name,

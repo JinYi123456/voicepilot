@@ -121,10 +121,11 @@ try {
     { timeout: 20000 },
   );
   log("[e2e] session.ready reached");
-  // ~30 s: cycle 1 (get_business_info) fires at ~0.6 s, cycle 2
+  // ~38 s: cycle 1 (get_business_info) fires at ~0.6 s, cycle 2
   // (save_call_summary) at ~12.6 s, cycle 3 (confirm_booking write +
-  // verified re-read) at ~24.6 s. All tool.result round-trips must land.
-  await sleep(30000);
+  // verified re-read) at ~24.6 s, cycle 4 (name-fix reschedule_booking on
+  // the just-created booking) at ~40 s after cycle 3's tool.result.
+  await sleep(38000);
 
   // 5. Harvest on-page diagnostics
   const bodyText = await page.evaluate(() => document.body.innerText);
@@ -207,6 +208,8 @@ try {
   results.push(check("save_call_summary tool.call handled", /save_call_summary/));
   results.push(check("confirm_booking result verified in system", /"verified":true[\s\S]{0,200}"record\"/));
   results.push(check("booking card shows ✓ Verified in system", /✓ Verified in system/));
+  results.push(check("name-fix via reschedule_booking (no duplicate confirm)", /reschedule_booking[\s\S]{0,500}Test Buyer Renamed/));
+  results.push(check("name-fix verified, same slot kept (no duplicate booking)", /Bookings \(3\)[\s\S]{0,900}Test Buyer Renamed/));
   results.push(check("no Unknown tool errors", !/Unknown tool/.test(lines.join("\n"))));
   results.push(check("no page errors", !lines.some((l) => l.startsWith("[pageerror]"))));
   results.push(check("call summary card visible (tool or fallback)", /Call Summary[\s\S]{0,400}(saved by agent|auto-generated fallback)/));
