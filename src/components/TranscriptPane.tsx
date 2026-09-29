@@ -57,7 +57,7 @@ export function TranscriptPane({
           <span className="text-3xl">🎙️</span>
           <p>Click &quot;Start Call&quot; to begin the live voice conversation</p>
           <p className="text-xs text-zinc-600">
-            Feel free to mix English, Chinese and Malay — the agent understands it all
+            Feel free to mix English, Chinese and Malay — the agent understands it all and answers in English (no Chinese/Malay voices exist)
           </p>
         </div>
       )}

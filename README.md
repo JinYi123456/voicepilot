@@ -1,6 +1,6 @@
 # VoicePilot 🎧
 
-> A **multilingual AI front desk for small businesses** that understands **code-mixed English / Mandarin / Cantonese / Malay** — it answers calls for the demo shop (Sunrise Car Wash), quotes prices & hours from the business profile, takes bookings, and reschedules or cancels them — with every write verified against the store.
+> A **multilingual AI front desk for small businesses** that understands **code-mixed English / Mandarin / Cantonese / Malay** (the caller can mix languages; VoicePilot's spoken replies are English by design — see [Language support](#language-support)) — it answers calls for the demo shop (Sunrise Car Wash), quotes prices & hours from the business profile, takes bookings, and reschedules or cancels them — with every write verified against the store.
 
 lablab.ai × AssemblyAI Voice Agent Hackathon demo.
 
@@ -78,7 +78,20 @@ All of it runs over one `wss://agents.assemblyai.com/v1/ws` connection, and the 
 | Owner View | An on-page tab for the business owner: the full bookings list (with rescheduled / cancelled statuses) and an Activity Log of every tool call (time, args, result, verified badge) |
 | Call summary | The agent calls `save_call_summary` at goodbye; the card appears after the call ends. If it never fires, the frontend builds a fallback summary from the transcript + tool log (no LLM) |
 | Hangup | `session.end` → wait for `session.ended` → clean up (avoids the billable 30-second resume grace window) |
-| Multilingual | `language_codes: ["en","zh","yue","ms"]` steering + keyterms boost; STT code-switches natively mid-sentence |
+| Multilingual (recognition only) | AssemblyAI STT code-switches natively mid-sentence; optional `language_codes: ["en","zh","yue","ms"]` steering + keyterms boost (feature flags currently off in `src/lib/agent.ts`). This is **input only** — the agent's voice output is English by design, see [Language support](#language-support) |
+
+---
+
+## Language support
+
+Honest scope — what is verified, what is by design, and what is simulated:
+
+| Layer | What it actually does | Limitations |
+| --- | --- | --- |
+| Speech recognition (input) | AssemblyAI streaming STT with native code-switching. Verified in our tests with **English, Mandarin, Cantonese and Malay mixed in one call**. | Recognition can still make mistakes on mixed-language speech; accuracy varies with accent and background noise. |
+| Voice output (speaking) | AssemblyAI's voices officially support **English, Italian, Spanish, German, Portuguese and French only**. VoicePilot therefore answers in **English by design** — short, simple spoken English. | There are **no Chinese, Cantonese or Malay voices**: the agent understands those languages but never speaks them. |
+| Transcript language tags (EN / 中 / BM) | Detected **locally** by a simple word list in our code (`src/lib/language-tags.ts`). | Heuristic and may be imperfect. **Not provided by AssemblyAI** — the UI labels them "detected from transcript". |
+| "✓ Verified in system" | The booking record is re-read from the demo booking store after every write, and the verdict is shown to caller and owner. | The store is **simulated** (in-memory + localStorage) — there is no real backend or database. |
 
 ---
 
@@ -127,23 +140,25 @@ The right column has an **Owner View** tab strip with:
 
 Say the following 5 lines to the mic, in order. They cover every MVP demo point. The sentences are kept in their original code-mixed wording — that's the product's core selling point — with English translations in brackets.
 
+> **Who speaks what:** the **caller** says these code-mixed lines; VoicePilot understands them but always **answers in English by design** (no Chinese/Cantonese/Malay TTS voices exist — see [Language support](#language-support)).
+
 | # | Say this (original, code-mixed) | English translation | What it demonstrates | Expected behavior |
 | --- | --- | --- | --- | --- |
 | 1 | **"Hi，我想book明天下午的appointment，洗车的"** | "Hi, I'd like to book an appointment tomorrow afternoon, for a car wash" | Code-mixed EN+ZH, intent + slot extraction | The agent notes service=car wash, date=tomorrow, and asks a short follow-up for the exact time |
-| 2 | **"下个星期五得唔得？大概3点左右"** | "Would next Friday work? Around 3 o'clock" (Cantonese-flavored ZH) | Cantonese mixed with Mandarin/EN | The agent understands and checks Fri 15:00, then reads availability back aloud |
-| 3 | **"Boleh saya buat temujanji untuk Sabtu, 2 orang"** | "May I make an appointment for Saturday, 2 people" (Malay) | Malay-dominant utterance | The agent understands Sabtu=Saturday, 2 orang=2 people, and runs the availability flow |
-| 4 | **"等等，我刚才说错了，是周六不是周五，麻烦改一下"** | "Wait, I said that wrong — it's Saturday, not Friday, please change it" | Mid-conversation correction | The agent honors the latest correction (Saturday) and re-runs check_availability |
+| 2 | **"下个星期五得唔得？大概3点左右"** | "Would next Friday work? Around 3 o'clock" (Cantonese-flavored ZH) | Cantonese mixed with Mandarin/EN | The agent understands and checks Fri 15:00, then reads the availability back aloud (in English) |
+| 3 | **"Boleh saya buat temujanji untuk Sabtu, 2 orang"** | "May I make an appointment for Saturday, 2 people" (Malay) | Malay-dominant utterance | The agent understands Sabtu=Saturday, 2 orang=2 people, and runs the availability flow (replies in English) |
+| 4 | **"等等，我刚才说错了，是周六不是周五，麻烦改一下"** | "Wait, I said that wrong — it's Saturday, not Friday, please change it" | Mid-conversation correction (caller speaks Chinese) | The agent honors the latest correction (Saturday) and re-runs check_availability (replies in English) |
 | 5 | **"Ok confirm，我叫Amy，电话是0123456789"** | "Ok, confirmed. My name is Amy, phone 0123456789" | Verbal confirmation → booking | The agent calls confirm_booking and the **confirmation card pops in on the right** with **✓ Verified in system** (re-read from the store) |
 
 Tips for recording the demo video:
 
-1. During sentences 2–3, the "Merchant Availability" panel on the right shows the agent really consulting a calendar (if that slot is booked, the agent verbally suggests other open slots the same day — which demos the "no availability" branch).
+1. During sentences 2–3, the "Merchant Availability" panel on the right shows the agent really consulting a calendar (if that slot is booked, the agent verbally suggests other open slots the same day — which demos the "no availability" branch). The agent's spoken replies throughout are English.
 2. To showcase **real-time barge-in**: while the agent is reading back the confirmation, just cut in with "change it to Sunday" — it stops playing instantly and re-runs the flow (server-side semantic interruption).
 3. Tool call arguments and results appear live in the **Owner View → Activity Log**, making the two-step flow visible to judges: check_availability first → verbal confirmation → only then confirm_booking.
 4. Ask **"How much is the Full Detail?"** — the agent must call `get_business_info(topic:"prices")` and answer "120 ringgit" from the business profile (never from memory). **"What time do you open?"** / **"Where are you located?"** hit the `hours` / `location` topics.
 5. Say **"Hi, I booked under Mei Ling, 017-888 1234 — can I move it to Saturday 4pm?"** — the agent looks the booking up with `lookup_booking`, confirms verbally, then `reschedule_booking` moves it (old slot released on the heatmap) and reports the `verified` verdict. **"Actually, please just cancel it"** runs `cancel_booking` the same way — the Owner View then shows the record as `rescheduled` / `cancelled`.
 6. End with **"OK that's all, thank you, bye"** — the agent calls `save_call_summary` and the **Call Summary card** (intent / outcome / languages / next step) appears below the transcript. If the agent skips it, the frontend generates a fallback summary automatically (marked "auto-generated fallback").
-7. Every caller turn in the transcript carries **language tags** (EN / 中 / BM — e.g. "Boss，可以book明天下午3点吗" shows 中 + EN) labeled "detected from transcript" — a local heuristic on the text, not an API-provided label.
+7. Every caller turn in the transcript carries **language tags** (EN / 中 / BM — e.g. "Boss，可以book明天下午3点吗" shows 中 + EN) labeled "detected from transcript" — a local heuristic on the text, not an API-provided label. The agent still answers in English.
 
 ## Deploy to Vercel
 
