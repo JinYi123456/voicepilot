@@ -84,14 +84,27 @@ Language output rules:
  * Build the runtime system prompt. The dynamic "Today is ..." block is
  * computed in the browser on every Start Call so the model never has to
  * guess the current date (it used to invent e.g. 2025-03-29).
+ *
+ * The full 7-day date↔weekday table is also precomputed here in JS — the
+ * model must look days up, never calculate them (it once mis-said Saturday
+ * as Sunday mid-call).
  */
 export function buildSystemPrompt(now: Date = new Date()): string {
   const iso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-  const weekday = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][now.getDay()];
+  const weekday = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const bookableWeek: string[] = [];
+  for (let d = 0; d < 7; d++) {
+    const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + d);
+    const dayIso = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+    const dayName = weekday[day.getDay()];
+    bookableWeek.push(`  ${dayIso} ${dayName}${d === 0 ? " (today)" : ""}`);
+  }
   return `${SYSTEM_PROMPT}
 
-Today is ${iso} (${weekday}), timezone Asia/Kuala_Lumpur (GMT+8).
-Resolve relative dates (today, tomorrow, next Friday) from this date.
+Today is ${iso} (${weekday[now.getDay()]}), timezone Asia/Kuala_Lumpur (GMT+8).
+The bookable week is:
+${bookableWeek.join("\n")}
+Always look up the date from this table when the caller says a day name (e.g. "Saturday") — never calculate it yourself.
 The merchant only accepts bookings within the next 7 days.
 When calling tools, use date as YYYY-MM-DD and time_slot as 24-hour HH:00, e.g. 15:00.
 For any question about prices, hours, services or the address, call get_business_info first.${LANGUAGE_RULES}${FRONT_DESK_RULES}`;
