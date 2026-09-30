@@ -6,8 +6,8 @@ const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /**
  * Availability board — the mock 7-day × 9-slot table the tools query.
- * Free slots glow; booked ones are dim. Great "the agent really checks
- * a calendar" visual for the demo video.
+ * Free slots glow; booked ones are dim — a live view of the calendar the
+ * agent is actually consulting.
  */
 export function AvailabilityPanel({ slots }: { slots: SlotView[] }) {
   if (slots.length === 0) return null;
