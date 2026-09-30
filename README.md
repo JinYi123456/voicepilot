@@ -101,7 +101,7 @@ Honest scope — what is verified, what is by design, and what is simulated:
 ## Run locally
 
 ```bash
-# 1. Install dependencies (Node 18.18+)
+# 1. Install dependencies (Node 20.9+, required by Next.js 16)
 npm install
 
 # 2. Configure the single key
